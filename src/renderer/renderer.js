@@ -235,13 +235,14 @@ window.overlay.onLockedChanged((locked) => {
 });
 
 // The window is always click-through except this hover-activated hole: while
-// unlocked, moving the cursor over the top row (the track-label drag handle and
-// the color swatch — no header bar anymore) briefly makes the window interactive
-// so it can be dragged or the swatch clicked; leaving it hands mouse events
-// straight back to whatever's behind the overlay. main.js ignores this entirely
-// while locked, so locked always stays fully click-through with no exceptions.
-// Hit-tested by hand against raw mousemove (rather than relying on the browser's
-// derived mouseenter/mouseleave) because a click-through window's hover state
+// unlocked, moving the cursor over the track title's actual text or the color
+// swatch (not the row's full, mostly-invisible width — see trackLabelTextRect
+// below) briefly makes the window interactive so it can be dragged or the
+// swatch clicked; leaving it hands mouse events straight back to whatever's
+// behind the overlay. main.js ignores this entirely while locked, so locked
+// always stays fully click-through with no exceptions. Hit-tested by hand
+// against raw mousemove (rather than relying on the browser's derived
+// mouseenter/mouseleave) because a click-through window's hover state
 // machinery isn't guaranteed to run the same way as a normal, fully-interactive one.
 let isOverTopRow = false;
 // While the row is pressed, an OS-level window drag may be in progress (started
@@ -263,10 +264,36 @@ window.addEventListener('blur', () => {
   isPressed = false;
 });
 
+function pointInRect(x, y, rect) {
+  return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+// track-label has `flex: 1` so the swatch lands at the row's far right (see
+// style.css) — its own box is therefore almost always wider than its text,
+// leaving a big invisible-but-"clickable" dead zone between the title and the
+// swatch. Measuring the text node's own laid-out rect instead of the box's
+// gives the real glyph width; clamped to the box on the right in case a long
+// title is actually ellipsis-truncated, so the hit area never reaches past
+// where the visible (possibly "…"-cut) text stops.
+function trackLabelTextRect() {
+  const range = document.createRange();
+  range.selectNodeContents(trackLabel);
+  const textRect = range.getBoundingClientRect();
+  const boxRect = trackLabel.getBoundingClientRect();
+  return {
+    left: boxRect.left,
+    right: Math.min(textRect.right, boxRect.right),
+    top: boxRect.top,
+    bottom: boxRect.bottom,
+  };
+}
+
 document.addEventListener('mousemove', (e) => {
   if (isPressed) return;
-  const rect = topRow.getBoundingClientRect();
-  const over = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom;
+  let over = pointInRect(e.clientX, e.clientY, trackLabelTextRect());
+  if (!over && colorSwatch.style.display !== 'none') {
+    over = pointInRect(e.clientX, e.clientY, colorSwatch.getBoundingClientRect());
+  }
   if (over === isOverTopRow) return;
   isOverTopRow = over;
   window.overlay.setInteractive(over);
