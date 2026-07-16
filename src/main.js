@@ -15,7 +15,7 @@ const logger = require('./logger');
 const updater = require('./updater');
 const {
   trackKeyFor,
-  bottomLeftBounds: computeBottomLeftBounds,
+  topCenterBounds: computeTopCenterBounds,
   cycleValue,
   resizeKeepingTopLeftAnchored,
 } = require('./utils');
@@ -159,19 +159,19 @@ function doLogout() {
   updateTrayMenu();
 }
 
-function bottomLeftBounds() {
-  return computeBottomLeftBounds(screen.getPrimaryDisplay().workArea);
+function topCenterBounds() {
+  return computeTopCenterBounds(screen.getPrimaryDisplay().workArea);
 }
 
 function createWindow() {
   const savedBounds = store.get('bounds');
   const bounds = savedBounds && Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y)
     ? savedBounds
-    : { ...bottomLeftBounds(), ...savedBounds, x: undefined, y: undefined };
+    : { ...topCenterBounds(), ...savedBounds, x: undefined, y: undefined };
   if (bounds.x === undefined || bounds.y === undefined) {
-    const bl = bottomLeftBounds();
-    bounds.x = bl.x;
-    bounds.y = bl.y;
+    const tc = topCenterBounds();
+    bounds.x = tc.x;
+    bounds.y = tc.y;
   }
   win = new BrowserWindow({
     width: bounds.width || 620,
@@ -245,8 +245,8 @@ function createWindow() {
     return wx >= a.x - 50 && wy >= a.y - 50 && wx < a.x + a.width && wy < a.y + a.height;
   });
   if (!onScreen) {
-    const bl = bottomLeftBounds();
-    win.setPosition(bl.x, bl.y);
+    const tc = topCenterBounds();
+    win.setPosition(tc.x, tc.y);
   }
 }
 
@@ -443,10 +443,10 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: 'Reset position (bottom-left)',
+      label: 'Reset position (top-center)',
       click: () => {
         if (!win || win.isDestroyed()) return;
-        win.setBounds(bottomLeftBounds());
+        win.setBounds(topCenterBounds());
       },
     },
     { type: 'separator' },

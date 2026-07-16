@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { trackKeyFor, bottomLeftBounds, cycleValue, resizeKeepingTopLeftAnchored } = require('../src/utils');
+const { trackKeyFor, topCenterBounds, cycleValue, resizeKeepingTopLeftAnchored } = require('../src/utils');
 
 test('trackKeyFor combines title and artist into a stable key', () => {
   assert.equal(trackKeyFor('Song', 'Artist'), 'Song::Artist');
@@ -23,32 +23,32 @@ test('trackKeyFor changes when either title or artist changes', () => {
   assert.notEqual(trackKeyFor('Song', 'Other Artist'), base);
 });
 
-test('bottomLeftBounds anchors to the bottom-left of the given work area', () => {
+test('topCenterBounds horizontally centers the window in the given work area', () => {
   const workArea = { x: 0, y: 0, width: 2560, height: 1392 };
-  const bounds = bottomLeftBounds(workArea, { width: 620, height: 260, margin: 24 });
-  assert.equal(bounds.x, 24);
-  assert.equal(bounds.y, 1392 - 260 - 24);
+  const bounds = topCenterBounds(workArea, { width: 620, height: 260, margin: 24 });
+  assert.equal(bounds.x, Math.round((2560 - 620) / 2));
+  assert.equal(bounds.y, 24);
   assert.equal(bounds.width, 620);
   assert.equal(bounds.height, 260);
 });
 
-test('bottomLeftBounds offsets by a non-zero work area origin (secondary monitor)', () => {
+test('topCenterBounds offsets by a non-zero work area origin (secondary monitor)', () => {
   const workArea = { x: 1920, y: 100, width: 1600, height: 900 };
-  const bounds = bottomLeftBounds(workArea, { width: 620, height: 260, margin: 24 });
-  assert.equal(bounds.x, 1920 + 24);
-  assert.equal(bounds.y, 100 + 900 - 260 - 24);
+  const bounds = topCenterBounds(workArea, { width: 620, height: 260, margin: 24 });
+  assert.equal(bounds.x, 1920 + Math.round((1600 - 620) / 2));
+  assert.equal(bounds.y, 100 + 24);
 });
 
-test('bottomLeftBounds falls back to sensible defaults when size is omitted', () => {
+test('topCenterBounds falls back to sensible defaults when size is omitted', () => {
   const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
-  const bounds = bottomLeftBounds(workArea);
+  const bounds = topCenterBounds(workArea);
   assert.equal(bounds.width, Math.round(1920 / 3));
   assert.equal(bounds.height, 260);
 });
 
-test('bottomLeftBounds defaults width to a third of the work area (per-monitor scaling)', () => {
+test('topCenterBounds defaults width to a third of the work area (per-monitor scaling)', () => {
   const workArea = { x: 1920, y: 0, width: 2560, height: 1440 };
-  const bounds = bottomLeftBounds(workArea);
+  const bounds = topCenterBounds(workArea);
   assert.equal(bounds.width, Math.round(2560 / 3));
 });
 

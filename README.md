@@ -62,7 +62,7 @@ without popping up a console window.
 
 ## Usage
 
-The app starts unlocked and draggable, sitting bottom-left by default.
+The app starts unlocked and draggable, sitting top-center by default.
 
 | Action | Default hotkey |
 | --- | --- |

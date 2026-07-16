@@ -10,17 +10,19 @@ function trackKeyFor(title, artist) {
   return `${(title || '').trim()}::${(artist || '').trim()}`;
 }
 
-// Bottom-left placement for the overlay window, computed from a display's work area
+// Top-center placement for the overlay window, computed from a display's work area
 // (the area excluding the taskbar) rather than its full bounds. Width defaults to a
 // third of the work area's own width (rather than a fixed pixel value) so the overlay
-// scales with whatever display it's actually on, per-monitor.
-function bottomLeftBounds(workArea, size = {}) {
+// scales with whatever display it's actually on, per-monitor. Horizontally centers the
+// window itself (its center lands on the work area's center), not just offsetting it
+// from a corner — so it stays centered regardless of what width it ends up at.
+function topCenterBounds(workArea, size = {}) {
   const width = size.width ?? Math.round(workArea.width / 3);
   const height = size.height ?? 260;
   const margin = size.margin ?? 24;
   return {
-    x: workArea.x + margin,
-    y: workArea.y + workArea.height - height - margin,
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + margin,
     width,
     height,
   };
@@ -51,4 +53,4 @@ function resizeKeepingTopLeftAnchored(bounds, newWidth, newHeight) {
   };
 }
 
-module.exports = { trackKeyFor, bottomLeftBounds, cycleValue, resizeKeepingTopLeftAnchored };
+module.exports = { trackKeyFor, topCenterBounds, cycleValue, resizeKeepingTopLeftAnchored };
