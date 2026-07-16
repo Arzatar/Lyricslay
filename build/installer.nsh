@@ -1,10 +1,10 @@
-# Lyrics Overlay is a tray app — closing its window just hides it (so the X
+# Lyricslay is a tray app — closing its window just hides it (so the X
 # button doesn't kill background lyrics detection) rather than quitting, and
 # it runs as several processes on Windows (main, renderer, GPU, utility — all
-# sharing the "Lyrics Overlay.exe" image name). Between the two, electron-
+# sharing the "Lyricslay.exe" image name). Between the two, electron-
 # builder's own built-in "wait for the running app to close" retry (in
 # installSection.nsh) can run out before every one of them has actually
-# exited, surfacing as "Lyrics Overlay cannot be closed. Please close it
+# exited, surfacing as "Lyricslay cannot be closed. Please close it
 # manually." — whether installing fresh over an already-running copy or
 # installing an update. Forcefully closing all of them here, in customInit
 # (runs in .onInit, before that retry logic and before file extraction even

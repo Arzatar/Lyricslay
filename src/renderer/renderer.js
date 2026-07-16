@@ -8,7 +8,7 @@ const lyricsEl = document.getElementById('lyrics');
 const lyricsInner = document.getElementById('lyrics-inner');
 const colorInput = document.getElementById('color-input');
 
-const PLACEHOLDER_LABEL = 'Lyrics Overlay';
+const PLACEHOLDER_LABEL = 'Lyricslay';
 
 let state = {
   timed: null, // sorted [{timeMs, endMs, text}]

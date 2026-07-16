@@ -1,4 +1,4 @@
-# Lyrics Overlay
+# Lyricslay
 
 A Windows tray app that shows real-time, synced song lyrics in a transparent,
 always-on-top overlay — so you can read them while gaming or doing anything
@@ -57,7 +57,7 @@ npm install
 npm start
 ```
 
-Or just double-click `Start Lyrics Overlay.vbs` — it launches the app
+Or just double-click `Start Lyricslay.vbs` — it launches the app
 without popping up a console window.
 
 ## Usage
@@ -128,7 +128,7 @@ its "oauth" auth method. The token is encrypted at rest via Electron's
 
 ## Lyrics cache
 
-Every lyrics lookup is saved to `%APPDATA%\lyrics-overlay\lyrics-cache\`, one
+Every lyrics lookup is saved to `%APPDATA%\lyricslay\lyrics-cache\`, one
 JSON file per song, named `<title> - <artist>.json` (normalized: lowercase,
 accents/punctuation stripped) so you can find and delete a specific song by
 hand. Matching is by title + artist, not YouTube video ID — a re-upload or a
@@ -181,7 +181,7 @@ src/
   lyricsCache.js          Per-song, on-disk lyrics cache (title+artist keyed, no
                           expiry) — also stores each song's manual sync offset
   auth.js                Google OAuth device-flow login + encrypted token storage
-  logger.js               Persistent file logger (%APPDATA%\lyrics-overlay\overlay.log)
+  logger.js               Persistent file logger (%APPDATA%\lyricslay\overlay.log)
                           — the app has no console window, so this is how errors
                           and diagnostics are ever visible after the fact
   login-preload.js        IPC bridge for the small login-status window
@@ -240,7 +240,7 @@ window just hides it instead of quitting, so it never releases its own file
 locks on a graceful close request. `electron-builder`'s built-in "wait for
 the app to close" retry can run out before that happens, especially since
 the app runs as several processes (main, renderer, GPU, utility). Without a
-fix, that surfaces mid-install as "Lyrics Overlay cannot be closed. Please
+fix, that surfaces mid-install as "Lyricslay cannot be closed. Please
 close it manually." `build/installer.nsh` (wired in via `nsis.include`) adds
 a `customInit` hook that forcefully closes any running instance before
 extraction starts, reusing the same `FIND_PROCESS`/`taskkill` pattern
@@ -262,7 +262,7 @@ default move.
 **Without an installer**, a portable copy works fine for sharing with someone
 else: copy the project folder (including `node_modules`, so Electron itself
 is bundled — no Node.js required on their machine), zip it, and have them run
-`Start Lyrics Overlay.vbs`. Windows SmartScreen will warn on first run since
+`Start Lyricslay.vbs`. Windows SmartScreen will warn on first run since
 the exe isn't code-signed ("More info" → "Run anyway" gets past it) — expected
 for an unsigned personal app, not a sign of anything wrong.
 

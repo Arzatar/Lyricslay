@@ -10,7 +10,7 @@ const { pickBestMatch } = require('./textMatch');
 
 const BASE = 'https://lrclib.net/api';
 const HEADERS = {
-  'User-Agent': 'lyrics-overlay (personal, non-commercial overlay app)',
+  'User-Agent': 'lyricslay (personal, non-commercial overlay app)',
 };
 
 // "[01:02.34]Some text" -> { timeMs: 62340, text: 'Some text' }

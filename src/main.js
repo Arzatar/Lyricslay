@@ -284,7 +284,7 @@ function toggleVisible() {
 function createTray() {
   const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'tray.png'));
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon);
-  tray.setToolTip('Lyrics Overlay');
+  tray.setToolTip('Lyricslay');
   updateTrayMenu();
   // On Windows, Electron only auto-shows the context menu on right-click; a plain
   // left-click just fires 'click' with no menu, which reads as "the tray icon does
@@ -320,20 +320,20 @@ updater.onStatusChange((status) => {
     if (status.state === 'error') {
       dialog.showMessageBox({
         type: 'error',
-        title: 'Lyrics Overlay',
+        title: 'Lyricslay',
         message: "Couldn't check for updates",
         detail: status.error?.message || String(status.error),
       });
     } else if (status.dev) {
       dialog.showMessageBox({
         type: 'info',
-        title: 'Lyrics Overlay',
+        title: 'Lyricslay',
         message: 'Update checks are disabled in this development build.',
       });
     } else {
       dialog.showMessageBox({
         type: 'info',
-        title: 'Lyrics Overlay',
+        title: 'Lyricslay',
         message: `You're up to date (v${app.getVersion()}).`,
       });
     }
@@ -368,7 +368,7 @@ function updateTrayMenu() {
   const visible = win && !win.isDestroyed() ? win.isVisible() : store.get('visible');
 
   const menu = Menu.buildFromTemplate([
-    { label: 'Lyrics Overlay', enabled: false },
+    { label: 'Lyricslay', enabled: false },
     { type: 'separator' },
     {
       label: `${visible ? 'Hide' : 'Show'} overlay (${formatAccelerator(shortcutFor('toggleVisible'))})`,
