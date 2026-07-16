@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, screen, ipcMain, globalShortcut, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, screen, ipcMain, globalShortcut, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const { NowPlayingWatcher } = require('./nowplaying');
@@ -12,6 +12,7 @@ const ytmAuthModule = require('./auth');
 const { LyricsCache } = require('./lyricsCache');
 const { cleanTrackMetadata } = require('./trackMetadata');
 const logger = require('./logger');
+const updater = require('./updater');
 const {
   trackKeyFor,
   bottomLeftBounds: computeBottomLeftBounds,
@@ -302,6 +303,65 @@ function shortcutFor(id) {
   return store.get('shortcuts')[id];
 }
 
+// Set while a user-initiated tray click is waiting on a result, so the
+// "no update / error" outcomes (silent on the automatic startup check) get a
+// dialog only when someone actually asked. Downloading/downloaded outcomes need
+// no dialog either way — the tray item itself becomes the progress/install button.
+let manualUpdateCheckPending = false;
+
+function checkForUpdatesFromTray() {
+  manualUpdateCheckPending = true;
+  updater.checkForUpdates();
+}
+
+updater.onStatusChange((status) => {
+  if (manualUpdateCheckPending && (status.state === 'not-available' || status.state === 'error')) {
+    manualUpdateCheckPending = false;
+    if (status.state === 'error') {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Lyrics Overlay',
+        message: "Couldn't check for updates",
+        detail: status.error?.message || String(status.error),
+      });
+    } else if (status.dev) {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Lyrics Overlay',
+        message: 'Update checks are disabled in this development build.',
+      });
+    } else {
+      dialog.showMessageBox({
+        type: 'info',
+        title: 'Lyrics Overlay',
+        message: `You're up to date (v${app.getVersion()}).`,
+      });
+    }
+  }
+  updateTrayMenu();
+});
+
+// The single tray "update button" — its label/action changes with updater state
+// instead of living as several separate menu items.
+function updateMenuItem() {
+  const status = updater.getStatus();
+  switch (status.state) {
+    case 'checking':
+      return { label: 'Checking for updates…', enabled: false };
+    case 'downloading': {
+      const pct = status.progress ? ` (${Math.round(status.progress.percent)}%)` : '';
+      return { label: `Downloading update…${pct}`, enabled: false };
+    }
+    case 'downloaded':
+      return {
+        label: `Restart to install update (v${status.info?.version || ''})`,
+        click: () => updater.quitAndInstall(),
+      };
+    default:
+      return { label: 'Check for updates…', click: checkForUpdatesFromTray };
+  }
+}
+
 function updateTrayMenu() {
   if (!tray) return;
   const locked = store.get('locked');
@@ -398,6 +458,8 @@ function updateTrayMenu() {
       label: ytmAuth ? 'Sign out of YouTube Music' : 'Sign in with YouTube Music (Premium)',
       click: () => (ytmAuth ? doLogout() : doLogin()),
     },
+    { type: 'separator' },
+    updateMenuItem(),
     { type: 'separator' },
     {
       label: 'Quit',
@@ -803,6 +865,13 @@ app.whenReady().then(() => {
   createTray();
   registerShortcuts();
   startWatcher();
+
+  updater.init();
+  // Delayed so the update check never competes with startup (window creation,
+  // now-playing watcher, etc.) for network/CPU in the first moment after launch.
+  setTimeout(() => updater.checkForUpdates(), 10_000);
+  // Long-running tray app: also re-check periodically for anyone who never quits.
+  setInterval(() => updater.checkForUpdates(), 4 * 60 * 60 * 1000);
 });
 
 process.on('uncaughtException', (err) => logger.log('uncaughtException:', err.stack || String(err)));

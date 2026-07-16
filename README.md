@@ -247,3 +247,42 @@ is bundled — no Node.js required on their machine), zip it, and have them run
 `Start Lyrics Overlay.vbs`. Windows SmartScreen will warn on first run since
 the exe isn't code-signed ("More info" → "Run anyway" gets past it) — expected
 for an unsigned personal app, not a sign of anything wrong.
+
+## Releasing an update (auto-update)
+
+Installed copies check GitHub Releases for updates (`electron-updater`), both
+automatically (10s after launch, then every 4h) and on demand from the tray
+menu's *Check for updates…* item, which becomes *Downloading update…* and
+then *Restart to install update (vX.Y.Z)* once one's ready — that's the whole
+UI, no separate updater window.
+
+To ship a new version:
+
+1. Bump `"version"` in `package.json` (semver, no `v` prefix there).
+2. Commit that, then tag and push:
+   ```
+   git tag v1.0.1
+   git push origin v1.0.1
+   ```
+3. The `.github/workflows/release.yml` workflow builds the installer on a
+   Windows GitHub Actions runner and publishes it as a GitHub Release
+   (installer `.exe`, `.exe.blockmap`, and `latest.yml` — `electron-updater`
+   reads the last of those to decide if a newer version exists). Nothing to
+   configure: it uses the repo's built-in `GITHUB_TOKEN`.
+4. Once the release finishes (check the *Actions* tab), every installed copy
+   picks it up on its next check.
+
+The release only builds off a pushed tag — pushing to `main` alone does not
+publish anything.
+
+**Publishing manually** (e.g. to test the flow without CI) works too, from a
+Windows machine with a GitHub [personal access token](https://github.com/settings/tokens)
+that has `repo` scope:
+```
+$env:GH_TOKEN = "<token>"
+npm run dist:publish
+```
+
+**No code signing:** installers are unsigned, so SmartScreen shows the same
+"unknown publisher" warning on install as the portable copy does. Auto-update
+itself isn't affected — it doesn't depend on the installer being signed.

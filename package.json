@@ -7,16 +7,18 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
+    "dist:publish": "electron-builder --publish always",
     "test": "node --test"
   },
-  "author": "",
+  "author": "Arzatar",
   "license": "MIT",
   "devDependencies": {
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
   },
   "dependencies": {
-    "electron-store": "^8.2.0"
+    "electron-store": "^8.2.0",
+    "electron-updater": "^6.8.9"
   },
   "build": {
     "appId": "com.arzatar.lyricsoverlay",
@@ -25,10 +27,21 @@
       "target": "nsis",
       "icon": "assets/icon.png"
     },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
     "files": [
       "src/**/*",
       "assets/**/*",
       "package.json"
-    ]
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "Arzatar",
+      "repo": "Lyricslay"
+    }
   }
 }

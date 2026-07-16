@@ -1,0 +1,28 @@
+name: Release
+
+# Push a tag like v1.0.1 (matching the "version" in package.json, prefixed with
+# "v") to build the Windows installer and publish it as a GitHub Release.
+# electron-updater on already-installed clients picks it up from there.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - run: npx electron-builder --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
