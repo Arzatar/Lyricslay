@@ -1,0 +1,500 @@
+# Architecture
+
+## Data flow
+
+```
+Windows SMTC  --(poll every 800ms, JSON lines over stdout)-->  nowplaying.ps1
+                                                                     |
+                                                              nowplaying.js
+                                                          (spawns/restarts the
+                                                           PowerShell process)
+                                                                     |
+                                                              main.js (Electron
+                                                              main process)
+                                                                     |
+                                                        trackMetadata.js cleans
+                                                        title/artist (see below)
+                                                                     |
+                                    title/artist changed? --> lyricsCache.js lookup
+                                                              (title+artist keyed) --\
+                                                                     |               |
+                                                              cache miss       cache hit
+                                                                     |               |
+                                       1. ytmusic.js   (authenticated, if logged in) |
+                                       2. lrclib.js    (synced, keyless)             |
+                                       3. ytmusic.js   (plain text, unauthenticated) |
+                                       4. lyricsOvh.js (plain text, keyless)         |
+                                       5. genius.js    (plain text, scraped)         |
+                                                                     |               |
+                                                          lyricsCache.js.set()       |
+                                                                     |               |
+                                                                     \---------------/
+                                                                     |
+                                                        IPC ('now-playing',
+                                                       'lyrics-result', ...)
+                                                                     |
+                                                              preload.js
+                                                          (context-isolated
+                                                              bridge)
+                                                                     |
+                                                              renderer.js
+                                                        (draws the overlay,
+                                                       highlights the active
+                                                            line live)
+```
+
+## Why a PowerShell bridge for now-playing detection
+
+Windows exposes "what's currently playing" (title, artist, position, play/pause
+state) via `Windows.Media.Control.GlobalSystemMediaTransportControlsSessionManager`,
+a WinRT API. It's the same source that powers the volume flyout's mini-player and
+hardware media keys, and — crucially — browsers populate it automatically via the
+Web `MediaSession` API whenever a page plays audio, including YouTube Music. That
+means detection works with zero YouTube Music-specific integration: no browser
+extension, no scraping a specific tab.
+
+WinRT APIs aren't directly reachable from Node.js without a native addon, which
+would need a compiled toolchain on the user's machine. `nowplaying.ps1` sidesteps
+that by using PowerShell's own (built-in, no-install) WinRT projection, and
+`nowplaying.js` just spawns it once, keeps it alive across restarts, and parses
+its `stdout` (one JSON object per line, emitted every ~800ms).
+
+## Cleaning up third-party re-upload metadata (`trackMetadata.js`)
+
+SMTC reports whatever the page's `MediaSession` metadata says, which for a
+YouTube video is only as good as whoever uploaded it. For mainstream music on
+an official channel that's usually fine. It falls apart for anything only
+available as third-party re-uploads — the exact situation for artists whose
+content keeps getting taken down (the case that motivated this: a Chilean
+band, "Los Mox", whose explicit lyrics make official uploads short-lived) —
+where two things routinely go wrong:
+
+- The **artist** field is frequently just the uploader's YouTube channel name
+  (e.g. `neohex`, `sebastian rojas`), not the actual artist.
+- The **title** repeats the real artist name followed by junk annotations —
+  `"Los Mox: Curao manejo mejor! (letra)"` rather than just `"Curao manejo
+  mejor!"`.
+
+Searching lyrics sources with that verbatim pair fails across the board —
+verified directly: all five sources returned nothing for that exact title/artist
+combination before this existed. `cleanTrackMetadata(title, artist)` runs once,
+at the top of `handleTrackTick` in `main.js`, before the value is used for
+*anything* — the display label, the `lyricsCache.js` key, and every lyrics
+source's search query all flow from the same cleaned value, so a fix here
+doesn't need to be threaded through five call sites individually. It:
+
+1. Strips trailing `(...)`/`[...]` groups whose entire inner text matches a
+   known junk annotation (`letra`, `lyrics`, `official video`, `video
+   oficial`, `en vivo`, `live`, `hd`, ...) — matched as a whole, not a
+   substring, so a song genuinely titled with something like `"(Live Aid)"`
+   or `"(System of a Down song)"` is left alone.
+2. Checks whether what's left starts with `"Artist: Song"` or
+   `"Artist - Song"` (the near-universal YouTube upload convention) and, if
+   so, treats the prefix as the real artist — overriding the SMTC-reported
+   one, since that's the one actually wrong here.
+
+For an already-clean title/artist pair (the common case — official YT Music
+playback, mainstream official uploads), neither step matches anything, so
+this is a no-op; it only changes behavior for the messy-metadata case it was
+built for.
+
+## Why five lyrics sources, in that order
+
+No single source has both good coverage and line-level sync without
+authentication, so the chain tries progressively less-ideal (and, for the
+last two, progressively less-reliable) sources until one has something:
+
+- **YT Music's own timed-lyrics renderer** only responds to authenticated
+  requests — YouTube Music's web client won't return it to an anonymous
+  session. When the user has signed in (see `auth.js`), this is tried first,
+  since it's literally what their Premium account would show.
+- **LRCLIB** is free, keyless, and has synced (LRC) lyrics for a large slice
+  of mainstream and non-mainstream music, but it's a community database, so
+  coverage isn't universal.
+- **YT Music's plain-text lyrics** (Musixmatch-sourced, via the *unauthenticated*
+  `next`/`browse` InnerTube endpoints) has good raw coverage but no per-line
+  timestamps.
+- **lyrics.ovh** is another free, keyless, plain-text API — tried next since
+  it's still a real API call (fast, stable response shape) before resorting
+  to scraping.
+- **Genius (scraped)**, last: searches Genius's public search endpoint (no
+  API key — the same one that backs the search box on genius.com) for the
+  song, then scrapes the lyrics text out of the matched page's HTML. Kept
+  last on purpose — scraping page markup has no versioning guarantee and
+  breaks the moment Genius changes their page structure, unlike the other
+  four sources' actual APIs.
+
+All three plain-text sources (3–5) show with proportional auto-scroll
+standing in for real per-line sync.
+
+## Lyrics cache (`lyricsCache.js`)
+
+Every lyrics lookup — successful or not — is written to
+`<userData>/lyrics-cache/<title> - <artist>.json`. Two deliberate choices here,
+both driven by how the app is actually used rather than general-purpose
+caching defaults:
+
+- **Keyed by normalized title+artist, not YouTube video ID.** The same song
+  often exists as multiple YouTube uploads (official audio, a re-upload after
+  a takedown, a lyric-video reupload, etc.) with different video IDs but the
+  same lyrics. Keying by ID would mean re-fetching from scratch every time
+  `ytmusic.searchSong` happens to match a different upload of a song we've
+  already looked up.
+- **No expiry, ever — including "not found" results.** A cache with a TTL
+  would eventually re-hit the network on its own, which fights against the
+  explicit, user-driven model this app uses instead: delete a song's cache
+  file by hand to force a re-check (the filename is deliberately human
+  readable for exactly this). The one built-in exception is signing in
+  (`doLogin` in `main.js`), which busts the currently-playing song's entry
+  automatically — otherwise logging in specifically to get a better,
+  authenticated lyric would just silently hit the old cached result.
+
+Each entry also carries `cachedAtMs` and `offsetMs` — the latter backs the
+manual sync-offset feature below.
+
+## Logging (`logger.js`)
+
+The app launches via a `.vbs` script specifically so no console window ever
+appears — which also means `console.log` in `main.js` has nowhere a user
+could ever see it. `logger.js` appends timestamped lines to
+`<userData>/overlay.log` instead (fresh file each launch, no rotation — log
+volume here is low enough not to need one), and `main.js` wires three things
+into it: uncaught exceptions/rejections, the renderer's own `console.log`
+output (via `webContents.on('console-message', ...)`), and a few explicit
+diagnostic points (e.g. IPC handlers whose failure would otherwise be
+silent). This is the first thing to check when something silently doesn't
+work — most notably the color picker (see *Lyrics color* in the README),
+where the failure mode is Chromium doing nothing at all, with no exception to
+catch in the first place.
+
+## Click-through with one interactive hole
+
+Early on, "unlocked" meant a fully interactive window — you could drag it
+from anywhere, but it also blocked every click underneath, all the time
+(fine for repositioning, bad for actually reading lyrics while doing
+anything else). The current behavior instead makes the window click-through
+*everywhere, all the time*, with a single small exception carved out for the
+title/artist label (`#top-row` in `renderer.js`) that acts as the drag handle.
+
+The mechanism (standard Electron pattern for this exact need):
+
+1. `main.js` calls `win.setIgnoreMouseEvents(true, { forward: true })` by
+   default — clicks pass straight through to whatever's behind the overlay.
+   `forward: true` is what still lets the renderer receive raw `mousemove`
+   while ignoring is on.
+2. `renderer.js` listens to `document`'s `mousemove` and hand-hit-tests the
+   cursor position against `#top-row`'s `getBoundingClientRect()` — not
+   `mouseenter`/`mouseleave`, since a click-through window's derived hover
+   state isn't guaranteed to fire those reliably (this is the drop-in
+   replacement for an earlier attempt that used them and quietly never
+   fired at all).
+3. Crossing into/out of that rect sends `set-interactive` over IPC, and
+   `main.js` toggles `setIgnoreMouseEvents` accordingly — `false` (fully
+   interactive) while hovering the label, back to click-through-with-forward
+   the moment the cursor leaves it.
+4. While actually dragging (mouse down on the label), hover re-evaluation is
+   suspended (`isPressed` in `renderer.js`) — re-hit-testing mid-drag based on
+   viewport coordinates fought with the native `-webkit-app-region: drag`
+   loop and made moving the window feel jumpy/erratic.
+
+"Locked" mode skips all of this and stays permanently click-through,
+including the label — `set-interactive` is a no-op while locked
+(`ipcMain.on('set-interactive', ...)` checks `store.get('locked')` first).
+
+## Color swatch: why a visible dot, not a menu item
+
+Chromium only opens an `<input type="color">`'s native picker in response to
+a **genuine user click** — one triggered by calling `.click()` from an IPC
+handler (i.e., anything wired to a tray menu item) is silently ignored, no
+exception thrown, nothing in the console. This was hit directly: `open-color-picker`
+sent from the tray, `colorInput.click()` called correctly, and Chromium never
+opened anything.
+
+There's no way around that from the main process, so the swatch (`#color-swatch`
+in `renderer.js`) exists specifically to be the one thing on screen the user
+directly clicks. It's hidden by default (`colorSwatchVisible` in the store) since
+a permanent dot next to the title read as clutter; the tray's *Show/Hide
+color dot* toggles it, and — since it's only reachable through the same
+click-through hole as the drag label — showing it also unlocks and raises the
+window so it's actually clickable once shown.
+
+Related: while the native picker is open, `main.js` pauses the periodic
+"stay on top" `moveTop()` call (see below) via a `colorPickerOpen` flag, set
+via `set-picker-open` on the swatch click and cleared on the color input's
+`blur` (the only signal available that the picker closed, whether committed
+or cancelled) — otherwise the overlay re-asserts itself above its *own*
+picker popup every few seconds, making it unusable.
+
+## Manual sync offset
+
+Sources can be off by a fixed amount for a given song — an LRCLIB submission
+timed against a slightly different edit/master, for instance — so `Ctrl+Alt+,`
+/ `Ctrl+Alt+.` (and the equivalent tray items) let the user nudge a constant
+offset in 100ms steps for whatever's currently playing.
+
+The offset lives on the same `lyricsCache.js` entry as the lyrics themselves
+(`LyricsCache.adjustOffset`/`resetOffset`), not a separate settings store, for
+two reasons: it's inherently per-song (the same "keyed by title+artist, not
+video ID" reasoning as the cache itself applies here too), and piggybacking on
+the existing cache file means resetting sync never needs a fresh network
+lookup, and deleting a song's cache file naturally clears its offset too.
+
+`main.js` keeps `currentLyrics.offsetMs` in memory as the source of truth
+for hotkey/tray adjustments (`changeOffset`/`resetOffset`), and pushes the new
+value to the renderer over IPC (`offset-changed`) rather than resending the
+whole lyrics payload. The renderer applies it by subtracting it from the real
+playback position before comparing against line timestamps
+(`state.positionMs - state.offsetMs` in `updateActiveLine`) — so a positive
+offset delays the lyrics (makes them show later) and a negative one advances
+them, regardless of which line is currently active.
+
+## Customizable global shortcuts
+
+Every global hotkey used to be a hardcoded `globalShortcut.register()` call in
+`main.js`, with the accelerator baked directly into both the registration and
+the tray label string. `SHORTCUT_DEFS` (an array of `{id, label,
+defaultAccelerator}`) and `SHORTCUT_HANDLERS` (an `{id: () => ...}` map) near
+the top of `main.js` are now the single source of truth for what a shortcut
+*does*; the accelerator it's bound to lives in the store instead
+(`store.get('shortcuts')`, seeded from `DEFAULT_SHORTCUTS` the first time it's
+read), so it can change at runtime without touching code. `registerShortcuts()`
+always starts with `globalShortcut.unregisterAll()` before re-registering every
+`{id}` in `SHORTCUT_DEFS` against whatever accelerator the store currently has
+for it — simpler than diffing old vs. new bindings, and cheap enough (ten
+shortcuts) that it isn't worth optimizing. It's called once at startup and
+again after any change from the shortcuts window.
+
+The tray menu itself reads `store.get('shortcuts')` on every rebuild
+(`shortcutFor()`/`formatAccelerator()`), so its labels always show whatever
+the user last bound a given action to, rather than a hardcoded string that
+could silently go stale the moment it's rebound.
+
+**The shortcuts window** (`shortcuts-preload.js`, `renderer/shortcuts.html` /
+`.css` / `.js`) is a small, non-modal `BrowserWindow` — the same
+create-if-missing-else-focus pattern as the login window (`openShortcutsWindow`
+mirrors `doLogin`'s `loginWin` handling). It lists every `SHORTCUT_DEFS` entry
+with its current accelerator; clicking *Change* puts that row into a
+"recording" state, and the next keydown becomes the new binding via
+`renderer/shortcutUtils.js`'s `keyEventToAccelerator()` — keyed off
+`KeyboardEvent.code` rather than `.key` specifically so `Shift+,` still reads
+as `,` instead of the shifted symbol `<`, and so layout doesn't matter. A
+keydown carrying only modifier keys (`ControlLeft`, etc.) returns `null` from
+that function, which the recorder reads as "keep waiting" rather than
+committing a bare `Control` accelerator.
+
+A submitted accelerator is validated on the main-process side
+(`set-shortcut` handler), not trusted from the renderer: first for a conflict
+with another action already using the exact same accelerator (rejected with
+which action has it), then by actually attempting
+`globalShortcut.register()` on it and immediately unregistering again — some
+combinations are reserved by Windows or another running app and simply never
+register, and this is the only way to find that out before committing to it
+as the new binding. Only after both checks pass does it get written to the
+store and trigger a full `registerShortcuts()` + tray-menu rebuild.
+
+## Start with Windows
+
+Toggled from the tray menu via Electron's own `app.setLoginItemSettings()` /
+`app.getLoginItemSettings()` — no custom registry or Startup-folder code, and
+no separate store flag to track (the OS-level setting *is* the source of
+truth, read fresh every time the tray menu rebuilds, so it can't drift out of
+sync with reality if the user later disables it from Windows' own Settings →
+Startup Apps page).
+
+The one wrinkle is unpackaged runs (`npm start` / the portable `.vbs`
+launcher): `process.execPath` there is `node_modules/electron/dist/electron.exe`,
+a generic Electron shell with no knowledge of *this* project unless told. A
+packaged build's own `.exe` already knows what to load, so `loginItemOptions()`
+only adds an explicit `path`/`args` (pointing at this project's root folder,
+same as running `electron .`) when `app.isPackaged` is false — without that,
+enabling this setting from a dev/portable run would register a login item
+that opens a blank Electron window with nothing to run.
+
+**Gotcha: `getLoginItemSettings()` must be called with the same `path`/`args`
+used to set it.** On Windows it compares against whatever `path`/`args` are
+passed in (defaulting to bare `process.execPath`, no args, if omitted) to
+decide `openAtLogin`. Reading it back with no arguments right after enabling it
+*with* args — the first version of this — made the tray label always read
+back "Enable" even immediately after successfully turning it on, since the
+registry's actual command line (exe + project path) never matched the
+bare-exe-only comparison the read was making. `loginItemOptions()` is shared
+by both `setStartWithWindows()` and `startWithWindowsEnabled()` specifically
+so this can't drift out of sync again.
+
+## Authentication (`auth.js`)
+
+An earlier version of this app opened an embedded `BrowserWindow` pointed at
+`music.youtube.com` and scraped the resulting session cookies. That works, but
+an embedded window gets a blank Chromium profile — no saved passwords, no
+passkeys, no autofill — which makes Google sign-in noticeably worse than
+using the browser you actually use every day.
+
+Instead, `auth.js` implements Google's **OAuth 2.0 device authorization grant**
+(RFC 8628) — the flow designed for apps that can't (or shouldn't) embed a
+browser, such as TVs and set-top boxes:
+
+1. The app POSTs to Google's device-code endpoint and gets back a short
+   `user_code` plus a `verification_url`.
+2. It calls `shell.openExternal(verification_url)`, which opens the URL in
+   the **user's actual default browser** — their real profile, autofill and
+   all — not anything the app controls.
+3. A small local window (`renderer/login.html`) — not a webview into Google,
+   just static UI the app owns — shows the code so the user can confirm it
+   matches what their browser displays.
+4. The app polls Google's token endpoint until the user approves the device
+   in their browser, then receives an OAuth `access_token` + `refresh_token`.
+5. Both are encrypted and written to disk via Electron's `safeStorage`
+   (backed by Windows DPAPI, tied to the current Windows user account).
+   `access_token` is refreshed automatically (`isTokenExpired` / 60s safety
+   margin) using the `refresh_token` before each authenticated request.
+
+Subsequent InnerTube calls send `Authorization: Bearer <access_token>`
+instead of the old cookie/`SAPISIDHASH` pair — simpler, and it's Google's
+sanctioned mechanism for this use case rather than a cookie-scraping hack.
+This mirrors the "oauth" auth method the open-source `ytmusicapi` project
+documents; `CLIENT_ID`/`CLIENT_SECRET` in `auth.js` are the same public "TV
+and Limited Input device" OAuth client published by that project and by
+`yt-dlp` for this exact purpose — not a secret tied to this app or its users.
+
+## Testable core vs. Electron glue
+
+Electron's main process (`main.js`) can't be `require`d outside an Electron
+runtime — it touches `app`/`BrowserWindow` at module scope, and those are
+`undefined` under plain Node. To keep the actual logic unit-testable, anything
+that doesn't need a live window, tray, or network call was pulled into small,
+dependency-free modules:
+
+- `utils.js` — track-identity key, window placement math, settings-cycling
+  (`cycleValue`), and top-left-anchored resize math (`resizeKeepingTopLeftAnchored`).
+- `trackMetadata.js` — fully pure: junk-annotation stripping and
+  artist-from-title extraction, entirely string-in/string-out.
+- `lyricsCache.js` — filename sanitizing/keying, and the offset math in
+  `adjustOffset`/`resetOffset`, are pure; `get`/`set`/`delete` do real file I/O
+  but take the cache directory as a constructor argument, so tests point them
+  at a temp directory instead of mocking `fs`.
+- `textMatch.js` — fuzzy title/artist scoring shared by `ytmusic.js`,
+  `lrclib.js`, and `genius.js`'s search-result ranking.
+- `lrclib.js`'s `parseLrc` — LRC text → timed line array.
+- `ytmusic.js`'s `extractSongCandidates` / `extractStaticLyrics` /
+  `extractTimedLyrics` — pure InnerTube JSON → plain object parsing, exported
+  separately from the functions that actually perform the `fetch()` calls.
+- `lyricsOvh.js`'s `parseLyricsOvhResponse` — same separation, one field to pull out.
+- `genius.js`'s `extractSongCandidates` (search JSON → candidates),
+  `extractLyricsFromHtml` (lyrics-page HTML → plain text), and
+  `removeExcludedSections` (drops Genius's own `data-exclude-from-selection`
+  chrome — see *Scraping gotcha* below) — all exported separately from the
+  `fetch()`-performing functions, same pattern as `ytmusic.js`.
+- `renderer/lyricsSync.js` — playback-position → active-line-index and
+  scroll-ratio math, loaded by both the renderer (via a plain `<script>` tag,
+  since the renderer has no bundler) and the test suite (via `require`).
+- `renderer/colorUtils.js` — hex → `"r, g, b"` conversion for the lyrics-color
+  CSS variable, same dual-load pattern as `lyricsSync.js`.
+- `renderer/shortcutUtils.js` — keydown-event fields → Electron accelerator
+  string for the keyboard-shortcuts recorder, same dual-load pattern; takes a
+  plain `{ctrlKey, altKey, ..., code}` object rather than a real
+  `KeyboardEvent` specifically so it stays callable (and testable) with no DOM.
+- `logger.js` — takes its target directory as an argument to `init()` (same
+  reasoning as `lyricsCache.js`), so tests point it at a temp dir and read
+  the resulting file back rather than mocking `fs`.
+
+Everything else — spawning the PowerShell process, wiring IPC, building the
+tray menu, driving the actual `BrowserWindow` — is thin enough that it's
+verified by running the app rather than by unit tests.
+
+**Gotcha for any future `renderer/*.js` helper**: these are loaded as plain
+`<script>` tags (no bundler, no module scope), so every one of them shares a
+single global scope. Two of these modules independently declared `const api`
+as their final export object, which silently threw `Identifier 'api' has
+already been declared` the moment a second one loaded — no error dialog, no
+visible symptom beyond "a feature that reads `window.<name>` mysteriously
+does nothing," since the failure happens in a `<script>` tag with no visible
+UI to report it. Every module's top-level export binding must have a unique
+name (`lyricsSyncApi`, `colorUtilsApi`, ...).
+
+## Fitting the window to N lines of lyrics
+
+The tray's *visible lines* setting (1/3/5) resizes the actual OS window
+rather than just clipping content inside a fixed-size one — "show 3 lines"
+should be true regardless of font size or how the window was last dragged.
+The renderer, not `main.js`, owns the height math: it reads the live
+`--font-size`/`--line-height-em` CSS custom properties and measures the
+track label's real rendered height via `getBoundingClientRect()`, so the
+computation can never drift out of sync with the actual CSS (`main.js` would
+otherwise need to hardcode a duplicate of every spacing rule that affects
+height). `main.js` separately owns the width: `applyDesiredSize()` re-reads
+`screen.getDisplayMatching(win.getBounds())` every time it resizes, so the
+window is always a third of whichever display it's currently on — including
+after being dragged to a different monitor (`win`'s `moved` event re-runs it
+with no new height, just to pick up a possible display change).
+
+**Top-aligned, not centered — the lyrics never need to shrink to survive
+wrapping.** An earlier version kept every `.lyrics-line` on exactly one
+visual row (`white-space: nowrap` + a `fitLineWidths()`-computed `--fit-scale`
+shrinking anything too wide) because the active line was vertically *centered*
+in the window via `translateY`, and that centering math assumed every line
+was exactly one `line-height` tall — a wrapped line broke that assumption,
+clipping the lines above/below it as playback advanced (confirmed directly on
+a Ska-P line 76 characters long). Shrinking text to force it onto one row to
+protect that assumption was the wrong fix — it made long lines needlessly
+tiny. The window is top-aligned instead: `updateActiveLine()` in
+`renderer.js` translates `.lyrics-inner` so the *first visible* line's own
+`.offsetTop` lands at y=0, and the block simply flows downward from there.
+Because that only depends on the first visible line's real rendered
+position — not an assumed uniform height for every line after it — a long
+line is free to wrap to 2+ rows: it and everything after it just moves
+further down, and the active line's *entire* wrapped block is highlighted as
+one unit, since it's one `<p>` element with the `.active` class.
+
+Wrapping "further down" needs somewhere to go, so `computeDesiredHeight()`
+reserves `WRAP_BUFFER_MULTIPLIER` (3x) the configured visible-line count in
+actual row budget — "show 3 lines" allocates height for 9, "show 5" for 15.
+Since the window has no background panel, that reserved space is simply
+invisible when unused; it only matters as headroom for wrapped lines to
+occupy without being clipped by `.lyrics`'s `overflow: hidden`. A single line
+wrapping to 4+ rows can still clip — an accepted tradeoff for never shrinking
+text to force everything onto one row.
+
+That reserved height also has to grow *somewhere* on screen, which is why
+`applyDesiredSize()` resizes with `resizeKeepingTopLeftAnchored` rather than
+a bottom-anchored version: an earlier version kept the window's *bottom*
+edge fixed and grew upward, which — once the 3x wrap-buffer made "show 5
+lines" reserve 15 rows of height instead of 5 — could grow the window right
+off the top of the screen from a window sitting low enough on screen (its
+usual default position). Anchoring the top-left corner instead means growing
+purely adds height below wherever the window already is, never moving
+content already on screen out from under the user.
+
+`updateActiveLine()` still explicitly marks any line more than
+`floor(visibleLines / 2)` away from the active one with `.outside-window`
+(`opacity: 0`), independent of the translateY math, so only a bounded window
+of lines is ever in play regardless of how any of them wrap.
+
+**Gotcha: `resizable: false` pins the window's effective min/max size on
+Windows.** The window is `resizable: false` (manual edge-dragging fought with
+the programmatic sizing above and was reported as jumpy), but `setBounds()`
+still needs to *shrink* it when `visibleLines` decreases (or the window moves
+to a smaller display). Toggling `setResizable(true)` just for that one call,
+then back to `false`, is the standard workaround for `setBounds()` otherwise
+silently refusing to shrink a non-resizable window on Windows — but doing so
+pins the window's effective minimum *and maximum* size to whatever it
+happened to be at that exact moment, and that pin is not undone by toggling
+`resizable` back. Left alone, this made the window grow correctly but never
+shrink back down (the "shrink" call's own target height would get clamped to
+the *previous, larger* size, which futureproof-looking `win.getMinimumSize()`
+calls would silently pick up instead of the real intended minimum). The fix
+in `applyDesiredSize()` is to never trust `win.getMinimumSize()`/
+`getMaximumSize()` for this and instead use fixed `MIN_WINDOW_WIDTH`/
+`MIN_WINDOW_HEIGHT` constants, then explicitly call
+`setMinimumSize`/`setMaximumSize` back to their real intended values after
+every resize, undoing that call's own pinning before the next resize needs it.
+
+**Gotcha: `win.moveTop()` also un-hides a hidden window.** The periodic
+`setInterval(..., 3000)` that keeps the overlay above newly-focused
+fullscreen apps/games used to call `moveTop()` unconditionally. `moveTop()`
+turns out to *show* a hidden window as a side effect on Windows — so
+"Hide overlay" would silently undo itself a few seconds later, with
+nothing updating the tray label or the persisted `visible` state to match
+(they'd still say hidden while the window was back on screen). The interval
+now checks `store.get('visible')` first. The same call is also paused while
+the color picker is open, for the unrelated reason described in the *Color
+swatch* section above.

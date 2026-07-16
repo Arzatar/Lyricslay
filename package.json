@@ -1,0 +1,34 @@
+{
+  "name": "lyrics-overlay",
+  "version": "1.0.0",
+  "description": "Real-time, synced lyrics overlay for YouTube Music, always on top of any application.",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "test": "node --test"
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "electron-store": "^8.2.0"
+  },
+  "build": {
+    "appId": "com.arzatar.lyricsoverlay",
+    "productName": "Lyrics Overlay",
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.png"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ]
+  }
+}

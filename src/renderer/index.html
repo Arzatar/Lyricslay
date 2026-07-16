@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Lyrics Overlay</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="root" class="locked">
+      <div id="top-row">
+        <div id="track-label">Lyrics Overlay</div>
+        <button id="color-swatch" title="Change lyrics color" style="display: none"></button>
+      </div>
+      <div id="lyrics" class="lyrics">
+        <div id="lyrics-inner" class="lyrics-inner">
+          <p class="hint">Waiting for YouTube Music playback…</p>
+        </div>
+      </div>
+      <input type="color" id="color-input" style="display: none" />
+    </div>
+    <script src="lyricsSync.js"></script>
+    <script src="colorUtils.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

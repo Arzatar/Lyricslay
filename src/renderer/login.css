@@ -1,0 +1,75 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #14141a;
+  color: #f2f2f5;
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 12px;
+}
+
+.hint {
+  font-size: 13px;
+  color: rgba(242, 242, 245, 0.7);
+  margin: 0 0 20px;
+  max-width: 360px;
+}
+
+#code {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 14px 24px;
+  margin-bottom: 18px;
+  user-select: text;
+}
+
+.status {
+  font-size: 13px;
+  color: rgba(242, 242, 245, 0.85);
+  min-height: 18px;
+  margin: 0 0 20px;
+}
+
+.status.success {
+  color: #6ee7a0;
+}
+
+.status.error {
+  color: #f27070;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+}
+
+button {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: inherit;
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}

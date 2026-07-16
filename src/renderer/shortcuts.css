@@ -1,0 +1,97 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #14141a;
+  color: #f2f2f5;
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px;
+  /* Content height varies with how many shortcuts there are, but the window
+     itself doesn't resize — #list (flex: 1, below) is what absorbs any extra
+     space or, if it's the one that overflows, scrolls internally, so the
+     header/hint above and the actions row below stay put either way. */
+  overflow: hidden;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0 0 8px;
+}
+
+.hint {
+  font-size: 13px;
+  color: rgba(242, 242, 245, 0.7);
+  margin: 0 0 16px;
+}
+
+#list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0; /* let a flex child actually shrink and scroll instead of overflowing its parent */
+  overflow-y: auto;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.row .label {
+  flex: 1;
+  font-size: 13px;
+}
+
+.row .key {
+  font-size: 12px;
+  font-family: 'Consolas', monospace;
+  color: rgba(242, 242, 245, 0.75);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.row.recording .key {
+  color: #ffd166;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+button {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: inherit;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.row button {
+  padding: 5px 10px;
+  font-size: 12px;
+}
