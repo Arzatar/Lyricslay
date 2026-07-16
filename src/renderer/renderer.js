@@ -235,15 +235,15 @@ window.overlay.onLockedChanged((locked) => {
 });
 
 // The window is always click-through except this hover-activated hole: while
-// unlocked, moving the cursor over the track title's actual text or the color
-// swatch (not the row's full, mostly-invisible width — see trackLabelTextRect
-// below) briefly makes the window interactive so it can be dragged or the
-// swatch clicked; leaving it hands mouse events straight back to whatever's
-// behind the overlay. main.js ignores this entirely while locked, so locked
-// always stays fully click-through with no exceptions. Hit-tested by hand
-// against raw mousemove (rather than relying on the browser's derived
-// mouseenter/mouseleave) because a click-through window's hover state
-// machinery isn't guaranteed to run the same way as a normal, fully-interactive one.
+// unlocked, moving the cursor over the track title's own (text-hugging — see
+// #track-label in style.css) box or the color swatch briefly makes the window
+// interactive so it can be dragged or the swatch clicked; leaving it hands
+// mouse events straight back to whatever's behind the overlay. main.js
+// ignores this entirely while locked, so locked always stays fully
+// click-through with no exceptions. Hit-tested by hand against raw mousemove
+// (rather than relying on the browser's derived mouseenter/mouseleave)
+// because a click-through window's hover state machinery isn't guaranteed to
+// run the same way as a normal, fully-interactive one.
 let isOverTopRow = false;
 // While the row is pressed, an OS-level window drag may be in progress (started
 // via -webkit-app-region: drag) — re-evaluating hover mid-drag based on viewport
@@ -268,29 +268,11 @@ function pointInRect(x, y, rect) {
   return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
 }
 
-// track-label has `flex: 1` so the swatch lands at the row's far right (see
-// style.css) — its own box is therefore almost always wider than its text,
-// leaving a big invisible-but-"clickable" dead zone between the title and the
-// swatch. Measuring the text node's own laid-out rect instead of the box's
-// gives the real glyph width; clamped to the box on the right in case a long
-// title is actually ellipsis-truncated, so the hit area never reaches past
-// where the visible (possibly "…"-cut) text stops.
-function trackLabelTextRect() {
-  const range = document.createRange();
-  range.selectNodeContents(trackLabel);
-  const textRect = range.getBoundingClientRect();
-  const boxRect = trackLabel.getBoundingClientRect();
-  return {
-    left: boxRect.left,
-    right: Math.min(textRect.right, boxRect.right),
-    top: boxRect.top,
-    bottom: boxRect.bottom,
-  };
-}
-
+// track-label no longer has flex-grow (see style.css), so its own box already
+// hugs its text — no need to separately measure the rendered glyphs here.
 document.addEventListener('mousemove', (e) => {
   if (isPressed) return;
-  let over = pointInRect(e.clientX, e.clientY, trackLabelTextRect());
+  let over = pointInRect(e.clientX, e.clientY, trackLabel.getBoundingClientRect());
   if (!over && colorSwatch.style.display !== 'none') {
     over = pointInRect(e.clientX, e.clientY, colorSwatch.getBoundingClientRect());
   }

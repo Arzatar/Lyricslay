@@ -56,7 +56,18 @@ body {
 }
 
 #track-label {
-  flex: 1;
+  /* No flex-grow (was `flex: 1`): a growing box stretched -webkit-app-region:
+     drag and the click-through hit-test (renderer.js) over all the empty
+     space between the title and the swatch too, not just the visible text —
+     and worse, Chromium's OS-level drag-region hit-testing over that empty
+     span made mousemove delivery there unreliable, so the click-through
+     toggle would sometimes get stuck instead of just being "too generous".
+     flex-shrink stays on with min-width: 0 so a title long enough to not fit
+     still shrinks down to the available space and ellipsizes normally —
+     `justify-content: space-between` on #top-row does the rest, keeping the
+     swatch pinned to the far right via gap, not by this element stretching
+     into it. */
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 14px;
   font-weight: 600;
