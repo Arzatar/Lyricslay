@@ -41,7 +41,8 @@
     "publish": {
       "provider": "github",
       "owner": "Arzatar",
-      "repo": "Lyricslay"
+      "repo": "Lyricslay",
+      "releaseType": "release"
     }
   }
 }
