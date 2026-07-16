@@ -230,7 +230,14 @@ window.overlay.onOpacityChanged((op) => {
   document.documentElement.style.setProperty('--opacity', op);
 });
 
-window.overlay.onLockedChanged((locked) => {
+// main.js already ignores 'set-interactive' while locked (see the
+// ipcMain.on('set-interactive', ...) handler), so this flag is belt-and-
+// suspenders — skipping the hit-test entirely while locked means there's no
+// interactivity toggle to race, glitch, or misfire in the first place, not
+// just one that gets vetoed on the other end.
+let locked = false;
+window.overlay.onLockedChanged((next) => {
+  locked = next;
   root.classList.toggle('locked', locked);
 });
 
@@ -238,12 +245,12 @@ window.overlay.onLockedChanged((locked) => {
 // unlocked, moving the cursor over the track title's own (text-hugging — see
 // #track-label in style.css) box or the color swatch briefly makes the window
 // interactive so it can be dragged or the swatch clicked; leaving it hands
-// mouse events straight back to whatever's behind the overlay. main.js
-// ignores this entirely while locked, so locked always stays fully
-// click-through with no exceptions. Hit-tested by hand against raw mousemove
-// (rather than relying on the browser's derived mouseenter/mouseleave)
-// because a click-through window's hover state machinery isn't guaranteed to
-// run the same way as a normal, fully-interactive one.
+// mouse events straight back to whatever's behind the overlay. Locked stays
+// fully click-through with no exceptions (see the `locked` guard below).
+// Hit-tested by hand against raw mousemove (rather than relying on the
+// browser's derived mouseenter/mouseleave) because a click-through window's
+// hover state machinery isn't guaranteed to run the same way as a normal,
+// fully-interactive one.
 let isOverTopRow = false;
 // While the row is pressed, an OS-level window drag may be in progress (started
 // via -webkit-app-region: drag) — re-evaluating hover mid-drag based on viewport
@@ -271,7 +278,7 @@ function pointInRect(x, y, rect) {
 // track-label no longer has flex-grow (see style.css), so its own box already
 // hugs its text — no need to separately measure the rendered glyphs here.
 document.addEventListener('mousemove', (e) => {
-  if (isPressed) return;
+  if (isPressed || locked) return;
   let over = pointInRect(e.clientX, e.clientY, trackLabel.getBoundingClientRect());
   if (!over && colorSwatch.style.display !== 'none') {
     over = pointInRect(e.clientX, e.clientY, colorSwatch.getBoundingClientRect());

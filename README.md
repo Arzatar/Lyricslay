@@ -98,10 +98,16 @@ exact spot automatically. An app you've never positioned it for just leaves
 the overlay wherever it already was until you drag it once. See
 `foregroundApp.ps1`/`foregroundApp.js`.
 
-**Visible lines:** tray menu → *More/Fewer visible lines* cycles the window
-between showing 1, 3, or 5 lines of lyrics (default 3) — it resizes the
-window itself to fit exactly that many lines, growing/shrinking downward so
-it stays anchored to wherever its top-left corner currently is.
+Dragged it somewhere unreachable (off-screen, behind something) for a
+specific app? Tray menu → *Reset position* lists every app with a remembered
+position — the current one first, then every other one below — and clicking
+one clears just that app's saved spot (snapping the overlay back to
+top-center immediately if that's the app currently behind it).
+
+**Visible lines:** tray menu → *Settings* → *More/Fewer visible lines* cycles
+the window between showing 1, 3, or 5 lines of lyrics (default 3) — it
+resizes the window itself to fit exactly that many lines, growing/shrinking
+downward so it stays anchored to wherever its top-left corner currently is.
 
 **Lyrics color:** tray menu → *Show color dot*, then click the small ● dot
 that appears next to the title to open the native Windows color picker.
@@ -112,10 +118,10 @@ title/artist label stays its own subtle gray so it never gets lost against a
 bright pick.
 
 **Sync offset:** if a song's lyrics are a beat early or late, nudge them with
-`Ctrl+Alt+,` (earlier) / `Ctrl+Alt+.` (later), or the equivalent tray menu
-items — each press moves by 100ms. The offset is saved per-song (in that
-song's [lyrics cache](#lyrics-cache) entry), so it's remembered next time that
-song plays. Tray menu → *Reset sync* zeroes it again.
+`Ctrl+Alt+,` (earlier) / `Ctrl+Alt+.` (later), or the equivalent tray menu →
+*Settings* items — each press moves by 100ms. The offset is saved per-song
+(in that song's [lyrics cache](#lyrics-cache) entry), so it's remembered next
+time that song plays. Tray menu → *Reset sync* zeroes it again.
 
 **Wrong or broken lyrics:** tray menu → *Re-search lyrics for this song*
 clears that song's [cached](#lyrics-cache) entry and immediately re-runs the
@@ -284,7 +290,10 @@ Installed copies check GitHub Releases for updates (`electron-updater`), both
 automatically (10s after launch, then every 4h) and on demand from the tray
 menu's *Check for updates…* item, which becomes *Downloading update…* and
 then *Restart to install update (vX.Y.Z)* once one's ready — that's the whole
-UI, no separate updater window.
+UI, no separate updater window. A Windows notification also pops up the
+moment an update starts downloading and again once it's ready to install
+(clicking that second one restarts and installs it directly), so you don't
+have to think to reopen the tray and check.
 
 To ship a new version:
 

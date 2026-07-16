@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, screen, ipcMain, globalShortcut, nativeImage, shell, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, screen, ipcMain, globalShortcut, nativeImage, shell, dialog, Notification } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 const { NowPlayingWatcher } = require('./nowplaying');
@@ -178,6 +178,53 @@ function doLogout() {
 
 function topCenterBounds() {
   return computeTopCenterBounds(screen.getPrimaryDisplay().workArea);
+}
+
+// Clears `appName`'s remembered position (if it has one) so the next time
+// it's foreground, applyForegroundApp() has nothing saved to re-apply and it
+// falls back to the default — and if `appName` is the app currently behind
+// the overlay (including both being null, before any app's been seen yet),
+// also snaps the window there immediately instead of only on next switch.
+// A bad per-app position (dragged somewhere unreachable, e.g. off-screen)
+// would otherwise never be fixable: resetting only the window's *current*
+// bounds without also clearing the saved entry just gets overwritten again
+// the next time that app comes back to the foreground.
+function resetPosition(appName) {
+  if (appName) {
+    const perApp = store.get('perAppBounds');
+    if (Object.prototype.hasOwnProperty.call(perApp, appName)) {
+      const next = { ...perApp };
+      delete next[appName];
+      store.set('perAppBounds', next);
+    }
+  }
+  if (appName === currentForegroundApp && win && !win.isDestroyed()) {
+    win.setBounds(topCenterBounds());
+  }
+  updateTrayMenu();
+}
+
+// One item for whatever app is currently behind the overlay (so the common
+// case — "this one specific app's position is wrong, right now" — is always
+// one click away without hunting for it below), then every *other* app with
+// a remembered position, so a bad one can be fixed even from a different app
+// (e.g. Warframe dragged off-screen while it's not even running).
+function resetPositionSubmenu() {
+  const perApp = store.get('perAppBounds');
+  const items = [
+    {
+      label: currentForegroundApp ? `This app (${currentForegroundApp})` : 'Current window',
+      click: () => resetPosition(currentForegroundApp),
+    },
+  ];
+  const others = Object.keys(perApp).filter((name) => name !== currentForegroundApp).sort();
+  if (others.length > 0) {
+    items.push({ type: 'separator' });
+    for (const name of others) {
+      items.push({ label: name, click: () => resetPosition(name) });
+    }
+  }
+  return items;
 }
 
 function createWindow() {
@@ -358,7 +405,34 @@ function checkForUpdatesFromTray() {
   updater.checkForUpdates();
 }
 
+// Fires once per state *transition* (not on every download-progress tick,
+// which reuses the 'downloading' state repeatedly) — a toast notification is
+// how "an update is ready" reaches you without having to think to reopen the
+// tray menu and check, which is the whole reason this exists.
+let lastNotifiedUpdateState = null;
+
+function notifyUpdateState(status) {
+  if (status.state === lastNotifiedUpdateState) return;
+  lastNotifiedUpdateState = status.state;
+  if (!Notification.isSupported()) return;
+
+  if (status.state === 'downloading') {
+    new Notification({
+      title: 'Lyricslay',
+      body: `Update${status.info?.version ? ` v${status.info.version}` : ''} found — downloading…`,
+    }).show();
+  } else if (status.state === 'downloaded') {
+    const notification = new Notification({
+      title: 'Lyricslay update ready',
+      body: `v${status.info?.version || ''} downloaded. Click here to restart and install now.`,
+    });
+    notification.on('click', () => updater.quitAndInstall());
+    notification.show();
+  }
+}
+
 updater.onStatusChange((status) => {
+  notifyUpdateState(status);
   if (manualUpdateCheckPending && (status.state === 'not-available' || status.state === 'error')) {
     manualUpdateCheckPending = false;
     if (status.state === 'error') {
@@ -424,33 +498,55 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: `Increase font size (${formatAccelerator(shortcutFor('increaseFontSize'))})`,
-      click: () => changeFontSize(2),
-    },
-    {
-      label: `Decrease font size (${formatAccelerator(shortcutFor('decreaseFontSize'))})`,
-      click: () => changeFontSize(-2),
-    },
-    {
-      label: `Increase opacity (${formatAccelerator(shortcutFor('increaseOpacity'))})`,
-      click: () => changeOpacity(0.05),
-    },
-    {
-      label: `Decrease opacity (${formatAccelerator(shortcutFor('decreaseOpacity'))})`,
-      click: () => changeOpacity(-0.05),
-    },
-    { type: 'separator' },
-    {
-      label: `Visible lines: ${store.get('visibleLines')}`,
-      enabled: false,
-    },
-    {
-      label: `More visible lines (${formatAccelerator(shortcutFor('moreVisibleLines'))})`,
-      click: () => changeVisibleLines(1),
-    },
-    {
-      label: `Fewer visible lines (${formatAccelerator(shortcutFor('fewerVisibleLines'))})`,
-      click: () => changeVisibleLines(-1),
+      // Font/opacity/visible-lines/sync-nudge are all "set once and forget"
+      // fine-tuning, unlike the actions around them (sync reset, re-search,
+      // sign-in, ...) that get reached for often enough to want at the top
+      // level — tucked away here once the flat list got too long to scan.
+      label: 'Settings',
+      submenu: [
+        {
+          label: `Increase font size (${formatAccelerator(shortcutFor('increaseFontSize'))})`,
+          click: () => changeFontSize(2),
+        },
+        {
+          label: `Decrease font size (${formatAccelerator(shortcutFor('decreaseFontSize'))})`,
+          click: () => changeFontSize(-2),
+        },
+        {
+          label: `Increase opacity (${formatAccelerator(shortcutFor('increaseOpacity'))})`,
+          click: () => changeOpacity(0.05),
+        },
+        {
+          label: `Decrease opacity (${formatAccelerator(shortcutFor('decreaseOpacity'))})`,
+          click: () => changeOpacity(-0.05),
+        },
+        { type: 'separator' },
+        {
+          label: `Visible lines: ${store.get('visibleLines')}`,
+          enabled: false,
+        },
+        {
+          label: `More visible lines (${formatAccelerator(shortcutFor('moreVisibleLines'))})`,
+          click: () => changeVisibleLines(1),
+        },
+        {
+          label: `Fewer visible lines (${formatAccelerator(shortcutFor('fewerVisibleLines'))})`,
+          click: () => changeVisibleLines(-1),
+        },
+        { type: 'separator' },
+        {
+          label: `This song's sync offset: ${currentOffsetMs()}ms`,
+          enabled: false,
+        },
+        {
+          label: `Advance lyrics sync (${formatAccelerator(shortcutFor('advanceLyrics'))})`,
+          click: () => changeOffset(-100),
+        },
+        {
+          label: `Delay lyrics sync (${formatAccelerator(shortcutFor('delayLyrics'))})`,
+          click: () => changeOffset(100),
+        },
+      ],
     },
     {
       // Chromium only opens an <input type="color">'s native picker on a genuine
@@ -465,18 +561,6 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: `This song's sync offset: ${currentOffsetMs()}ms`,
-      enabled: false,
-    },
-    {
-      label: `Advance lyrics sync (${formatAccelerator(shortcutFor('advanceLyrics'))})`,
-      click: () => changeOffset(-100),
-    },
-    {
-      label: `Delay lyrics sync (${formatAccelerator(shortcutFor('delayLyrics'))})`,
-      click: () => changeOffset(100),
-    },
-    {
       label: 'Reset sync',
       click: resetOffset,
     },
@@ -487,11 +571,8 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
-      label: 'Reset position (top-center)',
-      click: () => {
-        if (!win || win.isDestroyed()) return;
-        win.setBounds(topCenterBounds());
-      },
+      label: 'Reset position',
+      submenu: resetPositionSubmenu(),
     },
     { type: 'separator' },
     {
@@ -926,6 +1007,11 @@ ipcMain.on('set-interactive', (_e, interactive) => {
   if (interactive) win.setIgnoreMouseEvents(false);
   else win.setIgnoreMouseEvents(true, { forward: true });
 });
+
+// Windows groups/brands toast notifications and taskbar entries by this ID —
+// without it, packaged-app notifications can show up under a generic
+// "Electron" identity instead of the app's own name/icon.
+app.setAppUserModelId('com.arzatar.lyricslay');
 
 app.whenReady().then(() => {
   logger.init(app.getPath('userData'));
