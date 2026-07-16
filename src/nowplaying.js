@@ -31,7 +31,12 @@ class NowPlayingWatcher extends EventEmitter {
   }
 
   _spawn() {
-    const scriptPath = path.join(__dirname, 'nowplaying.ps1');
+    // powershell.exe is a separate OS process that can't read into an .asar
+    // archive, so in a packaged build this has to point at the unpacked copy
+    // (see the "asarUnpack" entry in package.json's build config) rather than
+    // the path __dirname naturally gives, which sits inside app.asar. In dev,
+    // __dirname never contains "app.asar" so this replace is a no-op.
+    const scriptPath = path.join(__dirname, 'nowplaying.ps1').replace('app.asar', 'app.asar.unpacked');
     this.proc = spawn(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File', scriptPath],
