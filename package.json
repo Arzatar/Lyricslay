@@ -1,6 +1,6 @@
 {
   "name": "lyrics-overlay",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Real-time, synced lyrics overlay for YouTube Music, always on top of any application.",
   "main": "src/main.js",
   "private": true,
@@ -31,7 +31,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "createStartMenuShortcut": true
+      "createStartMenuShortcut": true,
+      "include": "build/installer.nsh"
     },
     "files": [
       "src/**/*",

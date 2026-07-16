@@ -235,6 +235,18 @@ npm run dist
 Uses `electron-builder` to produce a Windows NSIS installer (see the `build`
 section of `package.json`).
 
+**Installing over a running copy:** the app is a tray app — closing its
+window just hides it instead of quitting, so it never releases its own file
+locks on a graceful close request. `electron-builder`'s built-in "wait for
+the app to close" retry can run out before that happens, especially since
+the app runs as several processes (main, renderer, GPU, utility). Without a
+fix, that surfaces mid-install as "Lyrics Overlay cannot be closed. Please
+close it manually." `build/installer.nsh` (wired in via `nsis.include`) adds
+a `customInit` hook that forcefully closes any running instance before
+extraction starts, reusing the same `FIND_PROCESS`/`taskkill` pattern
+`electron-builder` already uses internally for the analogous "another
+installer instance is already running" case.
+
 **Known issue on Windows without Developer Mode:** `electron-builder` always
 downloads `winCodeSign` (macOS code-signing binaries it bundles regardless of
 target platform) and extracts it with real symlinks. Creating those requires
