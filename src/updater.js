@@ -6,11 +6,16 @@
 // changes, instead of main.js having to know about every autoUpdater event.
 
 const { app } = require('electron');
-const { autoUpdater } = require('electron-updater');
 const logger = require('./logger');
 
-autoUpdater.autoDownload = true;
-autoUpdater.autoInstallOnAppQuit = true;
+// electron-updater's `autoUpdater` is a lazy singleton getter, but constructing
+// it immediately calls app.getVersion() — requiring the module (and touching
+// that getter) at the top of the file, before Electron's app singleton has
+// finished its own startup, crashes with "Cannot read properties of undefined
+// (reading 'getVersion')" under `electron .` (dev). Packaged runs happened not
+// to hit this timing window, which is what let it slip through untested. Doing
+// the require inside init() — called from app.whenReady() — sidesteps it.
+let autoUpdater = null;
 
 // state: 'idle' | 'checking' | 'downloading' | 'downloaded' | 'not-available' | 'error'
 let status = { state: 'idle' };
@@ -30,6 +35,10 @@ function getStatus() {
 }
 
 function init() {
+  ({ autoUpdater } = require('electron-updater'));
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
   autoUpdater.logger = {
     info: (msg) => logger.log('[updater]', msg),
     warn: (msg) => logger.log('[updater:warn]', msg),
