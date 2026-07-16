@@ -108,6 +108,12 @@ items — each press moves by 100ms. The offset is saved per-song (in that
 song's [lyrics cache](#lyrics-cache) entry), so it's remembered next time that
 song plays. Tray menu → *Reset sync* zeroes it again.
 
+**Wrong or broken lyrics:** tray menu → *Re-search lyrics for this song*
+clears that song's [cached](#lyrics-cache) entry and immediately re-runs the
+lookup from scratch. Useful when a source matched the wrong song, or returned
+something garbled/truncated — the cache never expires on its own, so without
+this a plain replay of the song would just hit that same bad entry again.
+
 **Start with Windows:** tray menu → *Enable start with Windows* launches the
 app automatically at login; the same item switches to *Disable* once it's on.
 

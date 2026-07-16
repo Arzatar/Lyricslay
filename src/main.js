@@ -436,6 +436,11 @@ function updateTrayMenu() {
       label: 'Reset sync',
       click: resetOffset,
     },
+    {
+      label: 'Re-search lyrics for this song',
+      enabled: !!lastTrackData?.title,
+      click: retryLyrics,
+    },
     { type: 'separator' },
     {
       label: 'Reset position (bottom-left)',
@@ -527,6 +532,19 @@ function resetOffset() {
   if (currentLyrics) currentLyrics.offsetMs = offsetMs;
   win?.webContents.send('offset-changed', offsetMs);
   updateTrayMenu();
+}
+
+// For when a source matched the wrong song, or returned something garbled/
+// truncated — the cache has no time-based expiry (see README > Lyrics cache),
+// so a plain re-fetch would just hit that same bad cached entry again. This
+// busts it and re-runs the lookup immediately, same as the cache-bust already
+// done automatically on sign-in, but user-triggered and for whichever source
+// currently has bad data instead of only the "should now use auth" case.
+function retryLyrics() {
+  if (!lastTrackData?.title || !lyricsCache) return;
+  lyricsCache.delete(lastTrackData.title, lastTrackData.artist);
+  currentTrackKey = null;
+  handleTrackTick(lastTrackData);
 }
 
 // Registers every configured shortcut fresh (see SHORTCUT_DEFS/SHORTCUT_HANDLERS
@@ -622,6 +640,11 @@ async function handleTrackTick(data) {
   if (key === currentTrackKey) return;
   currentTrackKey = key;
   currentLyrics = null;
+  // Enables "Re-search lyrics for this song" (disabled until there's a track to
+  // retry) — the tray menu is only rebuilt on explicit actions, not every tick,
+  // so a real track change needs its own trigger here rather than relying on
+  // whatever else happens to touch the tray next.
+  updateTrayMenu();
 
   const cached = lyricsCache?.get(data.title, data.artist);
   if (cached) {
