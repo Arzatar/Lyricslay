@@ -4,6 +4,7 @@ const { app, BrowserWindow, Tray, Menu, screen, ipcMain, globalShortcut, nativeI
 const path = require('path');
 const Store = require('electron-store');
 const { NowPlayingWatcher } = require('./nowplaying');
+const { ForegroundAppWatcher } = require('./foregroundApp');
 const { fetchLyricsForTrack } = require('./ytmusic');
 const { fetchSyncedLyrics } = require('./lrclib');
 const lyricsOvh = require('./lyricsOvh');
@@ -46,6 +47,10 @@ const DEFAULT_SHORTCUTS = Object.fromEntries(SHORTCUT_DEFS.map((s) => [s.id, s.d
 const store = new Store({
   defaults: {
     bounds: { width: 620, height: 260, x: undefined, y: undefined },
+    // Per-app remembered position/size, keyed by the foreground process name
+    // (e.g. "ffxiv_dx11", "Warframe.x64") — see foregroundApp.js. `bounds`
+    // above stays the fallback for apps with no entry here yet.
+    perAppBounds: {},
     fontSize: 22,
     opacity: 0.92,
     locked: false, // locked = click-through; unlocked lets you drag the overlay anywhere
@@ -79,6 +84,18 @@ let colorPickerOpen = false; // pauses the always-on-top re-assert while the nat
 let win = null;
 let tray = null;
 let watcher = null;
+let foregroundAppWatcher = null;
+// The last *other* app the overlay was seen sitting on top of — excludes our
+// own window (see OWN_PROCESS_NAME below), since clicking/dragging the
+// overlay itself briefly makes it the OS foreground window, which would
+// otherwise overwrite this with our own process name mid-drag. Position
+// saves/restores are keyed off this rather than the raw watcher output.
+let currentForegroundApp = null;
+// process.execPath is ".../Lyricslay.exe" packaged, ".../electron.exe" in
+// dev (`electron .`) — either way, basename-without-extension is exactly
+// what Get-Process reports as ProcessName for our own window in
+// foregroundApp.ps1's output, letting it be excluded the same way in both.
+const OWN_PROCESS_NAME = path.basename(process.execPath, '.exe');
 
 let currentTrackKey = null;
 let currentLyrics = null; // { timed, static, source, videoId }
@@ -252,7 +269,34 @@ function createWindow() {
 
 function saveBounds() {
   if (!win || win.isDestroyed()) return;
-  store.set('bounds', win.getBounds());
+  const bounds = win.getBounds();
+  store.set('bounds', bounds);
+  // Whatever app the overlay was last seen sitting on top of gets this exact
+  // position/size remembered for it — no explicit "save" step; dragging the
+  // overlay while a given game/app is behind it is the save action.
+  //
+  // Read-mutate-write the whole map with bracket access (not electron-store's
+  // dot-path `set('perAppBounds.x', ...)`) since a process name can itself
+  // contain a literal "." (e.g. Warframe's is "Warframe.x64") — dot-path
+  // would silently split that into a nested perAppBounds.Warframe.x64
+  // instead of one perAppBounds["Warframe.x64"] entry.
+  if (currentForegroundApp) {
+    const perApp = store.get('perAppBounds');
+    store.set('perAppBounds', { ...perApp, [currentForegroundApp]: bounds });
+  }
+}
+
+// Called whenever foregroundApp.ps1 reports a different foreground process.
+// Applies that app's remembered position/size if there is one; otherwise
+// leaves the overlay exactly where it already is (first time switching to a
+// given app just means nothing moves until you drag it once).
+function applyForegroundApp(processName) {
+  if (!processName || processName === OWN_PROCESS_NAME) return;
+  currentForegroundApp = processName;
+  const saved = store.get('perAppBounds')[processName];
+  if (saved && win && !win.isDestroyed()) {
+    win.setBounds(saved);
+  }
 }
 
 function applyLocked(locked) {
@@ -760,6 +804,10 @@ function startWatcher() {
     win?.webContents.send('now-playing', { active: false });
   });
   watcher.start();
+
+  foregroundAppWatcher = new ForegroundAppWatcher();
+  foregroundAppWatcher.on('change', applyForegroundApp);
+  foregroundAppWatcher.start();
 }
 
 ipcMain.handle('get-init-state', () => ({
@@ -907,6 +955,7 @@ app.on('window-all-closed', (e) => {
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   watcher?.stop();
+  foregroundAppWatcher?.stop();
 });
 
 // Single instance: focus/show the existing overlay instead of spawning a second copy.

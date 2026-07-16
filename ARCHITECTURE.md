@@ -59,6 +59,35 @@ that by using PowerShell's own (built-in, no-install) WinRT projection, and
 `nowplaying.js` just spawns it once, keeps it alive across restarts, and parses
 its `stdout` (one JSON object per line, emitted every ~800ms).
 
+## Per-app remembered position (`foregroundApp.js`)
+
+The overlay remembers a separate position/size per foreground app (top-center
+for one game, off to the side for another, bottom-left while coding) with no
+explicit "save" step — dragging it while a given app is behind it is the save
+action, and switching back to that app later restores that exact spot. Two
+pieces make that work, both in `main.js`:
+
+- **Detecting which app is behind it.** `foregroundApp.ps1` polls Win32's
+  `GetForegroundWindow` + `GetWindowThreadProcessId` every ~1s and streams the
+  owning process's name as JSON (same "PowerShell bridge, one JSON line per
+  tick" shape as `nowplaying.ps1`, for the same reason — no native addon
+  needed). `foregroundApp.js` dedupes consecutive identical ticks and only
+  emits `'change'` when the name actually differs.
+- **Not tracking ourselves.** Clicking/dragging the overlay itself briefly
+  makes *it* the OS foreground window, which would otherwise overwrite
+  "the app to save this position for" with our own process name mid-drag.
+  `main.js` compares every reported name against `OWN_PROCESS_NAME`
+  (`path.basename(process.execPath, '.exe')` — "Lyricslay" packaged,
+  "electron" in dev) and ignores it, keeping `currentForegroundApp` as
+  whatever real app was last seen instead.
+
+`perAppBounds` (in the electron-store config, alongside the flat `bounds`
+fallback used for apps with no entry yet) is read/rewritten as a whole object
+with bracket access (`perApp[processName]`) rather than electron-store's
+`set('perAppBounds.x', …)` dot-path shorthand — several real process names
+contain a literal `.` (`Warframe.x64`), which dot-path would otherwise split
+into a nested key instead of one flat entry.
+
 ## Cleaning up third-party re-upload metadata (`trackMetadata.js`)
 
 SMTC reports whatever the page's `MediaSession` metadata says, which for a

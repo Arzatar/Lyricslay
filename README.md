@@ -89,6 +89,15 @@ whatever's behind it and never blocks clicks to the app underneath, even while
 unlocked. "Locked" mode (`Ctrl+Alt+L`) makes it click-through *everywhere*,
 including that label, for when you want zero chance of it intercepting input.
 
+**Per-app position:** wherever you drag the overlay to is remembered
+separately for whatever app was in the foreground at the time — top-center
+for one game, off to the side for another, bottom-left while coding, etc.
+There's no explicit "save" step: dragging it while a given app is behind it
+*is* the save action, and switching back to that app later restores that
+exact spot automatically. An app you've never positioned it for just leaves
+the overlay wherever it already was until you drag it once. See
+`foregroundApp.ps1`/`foregroundApp.js`.
+
 **Visible lines:** tray menu → *More/Fewer visible lines* cycles the window
 between showing 1, 3, or 5 lines of lyrics (default 3) — it resizes the
 window itself to fit exactly that many lines, growing/shrinking downward so
@@ -170,6 +179,9 @@ src/
   preload.js            Context-isolated IPC bridge exposed to the renderer
   nowplaying.ps1         PowerShell script streaming SMTC now-playing info as JSON
   nowplaying.js          Node wrapper: spawns nowplaying.ps1, restarts it if it dies
+  foregroundApp.ps1      PowerShell script streaming the foreground window's
+                          owning process name as JSON, for per-app overlay position
+  foregroundApp.js       Node wrapper: spawns foregroundApp.ps1, restarts it if it dies
   trackMetadata.js        Cleans up third-party-reupload title/artist junk (channel
                           name as "artist", "(letra)"/"(official video)" suffixes,
                           "Artist: Song"-style titles) before it's used for search/cache
