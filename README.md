@@ -20,21 +20,31 @@ lyrics, and highlights the current line as the song plays.
   niche/harder-to-keep-online artists), where the "artist" field is often
   just the uploader's channel name and the title is padded with junk like
   "(letra)"/"(official video)". See `trackMetadata.js`.
-- Five lyrics sources, tried in order until one has something:
+- Timed lyrics first, always — tries every synced source before ever
+  settling for unsynced text:
   1. **YouTube Music (authenticated)** — if you're logged in (see below),
      fetches the same line-synced lyrics your Premium account sees in the app.
   2. **[LRCLIB](https://lrclib.net)** — a free, keyless, community-run synced
      lyrics database. Used whenever you're not logged in, or YT Music has no
      synced lyrics for a track.
-  3. **YouTube Music (plain text)** — unsynced, via the same (unauthenticated)
-     search as source 1.
-  4. **[lyrics.ovh](https://lyrics.ovh)** — another free, keyless, plain-text API.
-  5. **Genius (scraped)** — last resort: searches Genius's public search
+  3. **YouTube Music (unauthenticated)** — one more attempt at synced lyrics
+     without requiring login.
+  4. **AI transcription (optional, your own free key)** — if none of the
+     above found synced lyrics and you've set up a free Google Gemini API
+     key (tray menu → *Settings* → *Set up AI lyrics fallback…*), Gemini
+     watches the song's YouTube video directly and transcribes it with
+     per-line timestamps. Nothing is shared between installs — see
+     [ARCHITECTURE.md](ARCHITECTURE.md#ai-lyrics-fallback-bring-your-own-key)
+     for why this needs your own key.
+  5. **[lyrics.ovh](https://lyrics.ovh)** — free, keyless, plain-text API,
+     tried only once nothing above produced synced lyrics.
+  6. **Genius (scraped)** — last resort: searches Genius's public search
      endpoint and scrapes the lyrics text off the matched song page. More
      fragile than the API-based sources (breaks if Genius changes their page
      markup) and only ever used when nothing else has anything.
-  Sources 3–5 are all unsynced text, shown with proportional auto-scroll
-  instead of real line-by-line highlighting.
+  Whichever source ends up unsynced (any of 1–3 falling back, or 5–6) is
+  shown with proportional auto-scroll instead of real line-by-line
+  highlighting.
 - Lyrics are cached to disk by song (title + artist, not YouTube video ID —
   see *Lyrics cache* below), so replaying a song never re-hits the network.
 - Draggable, adjustable font size/opacity/color, and sized to fit exactly as
@@ -139,6 +149,16 @@ this a plain replay of the song would just hit that same bad entry again.
 **Start with Windows:** tray menu → *Enable start with Windows* launches the
 app automatically at login; the same item switches to *Disable* once it's on.
 
+**AI lyrics fallback:** tray menu → *Settings* → *Set up AI lyrics
+fallback…* opens a small window to paste a free Google Gemini API key (with
+a link to get one at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)),
+or clear a saved one. This only ever runs as the last attempt at *synced*
+lyrics, after YouTube Music and LRCLIB have both failed to find any — see
+*Features* above and [ARCHITECTURE.md](ARCHITECTURE.md#ai-lyrics-fallback-bring-your-own-key)
+for how it works and why it needs your own key rather than a shared one.
+Leaving it unconfigured is fully supported: the app just skips straight to
+the plain-text fallbacks (lyrics.ovh, Genius) instead.
+
 **Signing in:** tray menu → *Sign in with YouTube Music (Premium)*
 starts Google's OAuth device sign-in flow: it opens **your actual default
 browser** (full autofill/saved passwords/passkeys, unlike an embedded login
@@ -171,13 +191,13 @@ a song's cache file also clears any offset you'd set for it.
 
 ## Diagnosing "why did this song's lyrics come out wrong"
 
-Every attempt in the five-source fallback chain (see *Features* above) gets
-logged as it happens — which source hit, which missed, and why — ending in a
-line naming which one actually won, e.g. `[lyrics] result: source=lrclib-
-synced (timed)`. Useful when the same song looks different for two people
-(different source, or one hit synced and the other only got a static match)
-and there's no other way to tell which of five network calls behaved
-differently for each of you. Tray menu → *Settings* → *Open log file* opens
+Every attempt in the fallback chain (see *Features* above) gets logged as it
+happens — which source hit, which missed, and why — ending in a line naming
+which one actually won, e.g. `[lyrics] result: source=lrclib-synced (timed)`.
+Useful when the same song looks different for two people (different source,
+or one hit synced and the other only got a static match) and there's no
+other way to tell which network call behaved differently for each of you.
+Tray menu → *Settings* → *Open log file* opens
 `%APPDATA%\lyricslay\overlay.log`'s containing folder directly — handy for
 sending it to whoever else is comparing notes on the same song.
 
@@ -190,11 +210,15 @@ sending it to whoever else is comparing notes on the same song.
   "active" media session. If you have another app also publishing a media
   session (e.g. a video call, another music app), it may take priority over
   YT Music until YT Music is interacted with again.
-- All five lyrics sources are third-party/community (or scraped); coverage
-  and accuracy for obscure or regional tracks varies. The Genius fallback in
-  particular scrapes page HTML with no formal API contract, so it can break
-  entirely if Genius changes their markup — it's still just a fallback,
-  though, so a break there only matters for songs nothing else has.
+- All lyrics sources are third-party/community (or scraped), plus an
+  optional AI transcription step; coverage and accuracy for obscure or
+  regional tracks varies. The Genius fallback in particular scrapes page
+  HTML with no formal API contract, so it can break entirely if Genius
+  changes their markup — it's still just a fallback, though, so a break
+  there only matters for songs nothing else has.
+- The AI lyrics fallback requires your own free Google Gemini API key (see
+  *AI lyrics fallback* above) — without one, that step is skipped and the
+  app relies on the other sources only.
 
 ## Project structure
 
@@ -213,6 +237,14 @@ src/
   ytmusic.js             Minimal InnerTube client: search + lyrics (used by both
                           anonymous and authenticated requests)
   lrclib.js              LRCLIB client: fetch + parse synced/plain lyrics
+  geminiLyrics.js         Last-resort AI transcription: hands Gemini a YouTube
+                          URL directly and asks for per-line timed lyrics
+  geminiKeyStore.js       Encrypted on-disk storage for the user's own Gemini
+                          API key (same safeStorage pattern as auth.js)
+  gemini-key-preload.js   IPC bridge for the "AI lyrics fallback" settings window
+  renderer/geminiKey.html, The AI lyrics fallback settings window's UI: paste/
+    geminiKey.css,          clear a Gemini API key, link to get a free one
+    geminiKey.js
   lyricsOvh.js            lyrics.ovh client: free, keyless, plain-text-only
   genius.js               Last-resort fallback: Genius search + lyrics-page scraping
   lyricsCache.js          Per-song, on-disk lyrics cache (title+artist keyed, no

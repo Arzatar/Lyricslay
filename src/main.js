@@ -5,10 +5,20 @@ const path = require('path');
 const Store = require('electron-store');
 const { NowPlayingWatcher } = require('./nowplaying');
 const { ForegroundAppWatcher } = require('./foregroundApp');
-const { fetchLyricsForTrack } = require('./ytmusic');
+const { fetchLyricsForTrack, searchSong } = require('./ytmusic');
 const { fetchSyncedLyrics } = require('./lrclib');
 const lyricsOvh = require('./lyricsOvh');
 const genius = require('./genius');
+// Last-resort AI transcription fallback (see geminiLyrics.js) — only active
+// once the user's brought their own free API key (tray -> Settings -> Set
+// Gemini API key...); nothing is shipped/shared between installs. A
+// GEMINI_API_KEY env var can override it too, purely as a local-dev
+// convenience for testing without touching the encrypted store.
+const { fetchGeminiTimedLyrics } = require('./geminiLyrics');
+const geminiKeyStore = require('./geminiKeyStore');
+function getGeminiApiKey() {
+  return process.env.GEMINI_API_KEY || geminiKeyStore.loadGeminiKey();
+}
 const ytmAuthModule = require('./auth');
 const { LyricsCache } = require('./lyricsCache');
 const { cleanTrackMetadata } = require('./trackMetadata');
@@ -107,6 +117,7 @@ let loginWin = null;
 let lastVerificationUrl = null;
 let shortcutsWin = null;
 let positionPickerWin = null;
+let geminiKeyWin = null;
 // Last height the renderer asked for via 'set-desired-height' — kept around so
 // applyDesiredSize() can be re-run from win's 'moved' event (e.g. dragged to a
 // different-sized monitor) without needing the renderer to resend it.
@@ -561,6 +572,14 @@ function updateTrayMenu() {
             if (logPath) shell.showItemInFolder(logPath);
           },
         },
+        { type: 'separator' },
+        {
+          // Bring-your-own-key by design (see geminiKeyStore.js) — nothing
+          // shipped in the app itself, so this step of the lyrics chain is
+          // silently skipped for everyone until they set their own here.
+          label: geminiKeyStore.loadGeminiKey() ? 'AI lyrics fallback: key set' : 'Set up AI lyrics fallback…',
+          click: openGeminiKeySettings,
+        },
       ],
     },
     {
@@ -765,6 +784,37 @@ function openShortcutsWindow() {
   });
 }
 
+function createGeminiKeyWindow() {
+  const w = new BrowserWindow({
+    width: 420,
+    height: 380,
+    parent: win,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: 'AI Lyrics Fallback',
+    webPreferences: {
+      preload: path.join(__dirname, 'gemini-key-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  w.setMenuBarVisibility(false);
+  w.loadFile(path.join(__dirname, 'renderer', 'geminiKey.html'));
+  return w;
+}
+
+function openGeminiKeySettings() {
+  if (geminiKeyWin && !geminiKeyWin.isDestroyed()) {
+    geminiKeyWin.focus();
+    return;
+  }
+  geminiKeyWin = createGeminiKeyWindow();
+  geminiKeyWin.on('closed', () => {
+    geminiKeyWin = null;
+  });
+}
+
 // A visual 3x3 anchor grid (see renderer/positionPicker.html) — clicking a
 // cell moves the overlay straight to that spot, matching the "top-left,
 // top-center, ..., bottom-right" grid this mirrors 1:1 (see anchoredBounds
@@ -860,12 +910,18 @@ async function handleTrackTick(data) {
       : null;
     logger.log(`[lyrics] cache miss, searching (durationSec=${durationSec}, authed=${!!ytmAuth})`);
 
+    // PROTOTYPE reordering (not committed) — timed lyrics are now the only
+    // thing that satisfies the chain; a source returning only plain/static
+    // text no longer stops the search, it just gets kept as `staticFallback`
+    // in case *nothing* ever produces timed lyrics, tried dead last instead
+    // of accepted on the spot. ytmResult/videoId gets threaded through every
+    // step so the AI fallback can reuse whichever YT Music search already
+    // resolved a videoId, without a redundant extra search call.
     let lyrics = null;
     let ytmResult = null;
+    let staticFallback = null; // { static, source } — last resort only
 
-    // Logged in: try YT Music's own timed lyrics first — it's literally what the
-    // Premium account would show, and generally has better coverage for tracks
-    // LRCLIB doesn't know about.
+    // Step 1: YT Music, authenticated — timed only.
     if (ytmAuth) {
       try {
         const accessToken = await ytmAuthModule.getValidAccessToken(ytmAuth);
@@ -877,6 +933,9 @@ async function handleTrackTick(data) {
           logger.log(`[lyrics] ytmusic-timed-auth: hit (${ytmResult.timed.length} lines)`);
         } else {
           logger.log(`[lyrics] ytmusic-timed-auth: no timed lyrics (static=${!!ytmResult?.static})`);
+          if (ytmResult?.static && !staticFallback) {
+            staticFallback = { static: ytmResult.static, source: 'ytmusic-static-auth' };
+          }
         }
       } catch (err) {
         // refresh token got revoked/expired server-side — fall back to the
@@ -887,67 +946,111 @@ async function handleTrackTick(data) {
       }
     }
 
+    // Step 2: LRCLIB — timed only.
     if (!lyrics) {
       const synced = await fetchSyncedLyrics(data.title, data.artist, durationSec);
       if (myToken !== fetchToken) return;
       if (synced?.timed) {
         lyrics = { timed: synced.timed, static: null, source: 'lrclib-synced' };
         logger.log(`[lyrics] lrclib: hit, timed (${synced.timed.length} lines)`);
-      } else if (synced?.plain) {
-        lyrics = { timed: null, static: synced.plain, source: 'lrclib-plain' };
-        logger.log('[lyrics] lrclib: hit, plain text only (no synced lyrics for this match)');
       } else {
-        logger.log('[lyrics] lrclib: no match');
+        if (synced?.plain && !staticFallback) {
+          staticFallback = { static: synced.plain, source: 'lrclib-plain' };
+        }
+        logger.log(`[lyrics] lrclib: no timed match (plain=${!!synced?.plain})`);
       }
     }
 
+    // Step 3: YT Music again, unauthenticated this time — still timed only.
+    // In practice YT Music's timed-lyrics renderer only ever responds to
+    // authenticated requests (see ARCHITECTURE.md), so this realistically
+    // never hits — kept anyway since it's cheap (reuses step 1's result
+    // when we have one) and costs nothing to check.
     if (!lyrics) {
-      // Static fallback: reuse the YT Music result we already fetched if logged in,
-      // otherwise fetch fresh without auth.
       const fallback = ytmResult ?? (await fetchLyricsForTrack(data.title, data.artist));
       if (myToken !== fetchToken) return;
-      if (fallback?.static) {
-        lyrics = { timed: null, static: fallback.static, source: 'ytmusic-static' };
-        logger.log('[lyrics] ytmusic-static: hit');
+      ytmResult = ytmResult ?? fallback; // keep the videoId around for the AI step below
+      if (fallback?.timed) {
+        lyrics = { timed: fallback.timed, static: null, source: 'ytmusic-timed-unauth' };
+        logger.log(`[lyrics] ytmusic-timed-unauth: hit (${fallback.timed.length} lines)`);
       } else {
-        logger.log('[lyrics] ytmusic-static: no match');
+        if (fallback?.static && !staticFallback) {
+          staticFallback = { static: fallback.static, source: 'ytmusic-static' };
+        }
+        logger.log(`[lyrics] ytmusic-timed-unauth: no timed match (static=${!!fallback?.static})`);
       }
     }
 
-    // Neither auth'd/free YT Music nor LRCLIB had anything — try the free-API and
-    // scraping fallbacks before finally giving up. Both are wrapped individually so
-    // one being down (network hiccup, site markup change) doesn't fail the other.
-    if (!lyrics) {
+    // Step 4 (TODO, not implemented in this prototype): another free
+    // timed-lyrics source beyond LRCLIB/YT Music — NetEase Cloud Music's
+    // public API was the obvious candidate (used by other open-source lyrics
+    // tools) but its search/lyric endpoints now require its own AES+RSA
+    // request-encryption scheme, not a plain keyless GET as assumed; skipped
+    // for now rather than half-implementing crypto plumbing in a prototype.
+
+    // Step 5: last resort — ask Gemini to transcribe the song directly from
+    // its YouTube video (no audio capture on our end; Gemini's API can
+    // ingest a YouTube URL as input). Only runs if nothing above found
+    // *timed* lyrics. See geminiLyrics.js.
+    const geminiApiKey = getGeminiApiKey();
+    if (!lyrics && geminiApiKey) {
+      const videoId = ytmResult?.videoId ?? (await searchSong(data.title, data.artist))?.videoId;
+      if (myToken !== fetchToken) return;
+      if (videoId) {
+        logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...`);
+        try {
+          const aiTimed = await fetchGeminiTimedLyrics(videoId, geminiApiKey);
+          if (myToken !== fetchToken) return;
+          if (aiTimed) {
+            lyrics = { timed: aiTimed, static: null, source: 'gemini-ai' };
+            logger.log(`[lyrics] gemini: hit (${aiTimed.length} lines)`);
+          } else {
+            logger.log('[lyrics] gemini: no usable transcription returned');
+          }
+        } catch (err) {
+          logger.log('[lyrics] gemini: request failed:', err?.message || err);
+        }
+      } else {
+        logger.log('[lyrics] gemini: no videoId to give it, skipping');
+      }
+    }
+
+    // Nothing timed anywhere, including AI — try the remaining plain-text-only
+    // sources (if step 1-3 didn't already leave us a staticFallback) before
+    // finally giving up, same as the old chain's tail end.
+    if (!lyrics && !staticFallback) {
       try {
         const ovh = await lyricsOvh.fetchLyrics(data.title, data.artist);
         if (myToken !== fetchToken) return;
         if (ovh?.plain) {
-          lyrics = { timed: null, static: ovh.plain, source: 'lyricsovh-plain' };
+          staticFallback = { static: ovh.plain, source: 'lyricsovh-plain' };
           logger.log('[lyrics] lyricsovh: hit');
         } else {
           logger.log('[lyrics] lyricsovh: no match');
         }
       } catch (err) {
-        // API down/unreachable — fall through to the next source
         logger.log('[lyrics] lyricsovh: request failed:', err?.message || err);
       }
     }
 
-    if (!lyrics) {
+    if (!lyrics && !staticFallback) {
       try {
         const scraped = await genius.fetchLyrics(data.title, data.artist);
         if (myToken !== fetchToken) return;
         if (scraped?.plain) {
-          lyrics = { timed: null, static: scraped.plain, source: 'genius-scraped' };
+          staticFallback = { static: scraped.plain, source: 'genius-scraped' };
           logger.log('[lyrics] genius: hit');
         } else {
           logger.log('[lyrics] genius: no match');
         }
       } catch (err) {
-        // scraping is inherently fragile (site markup can change anytime) — never
-        // let it fail the whole lookup
         logger.log('[lyrics] genius: request failed:', err?.message || err);
       }
+    }
+
+    if (!lyrics && staticFallback) {
+      logger.log(`[lyrics] falling back to static-only result from ${staticFallback.source} (no timed lyrics found anywhere, including AI)`);
+      lyrics = { timed: null, static: staticFallback.static, source: staticFallback.source };
     }
 
     if (!lyrics) {
@@ -1065,6 +1168,24 @@ ipcMain.on('position-picker-choose', (_e, anchor) => {
     win.moveTop();
   }
   if (positionPickerWin && !positionPickerWin.isDestroyed()) positionPickerWin.close();
+});
+
+ipcMain.handle('gemini-key-status', () => ({ configured: !!geminiKeyStore.loadGeminiKey() }));
+
+ipcMain.handle('gemini-key-save', (_e, key) => {
+  geminiKeyStore.saveGeminiKey(key);
+});
+
+ipcMain.handle('gemini-key-clear', () => {
+  geminiKeyStore.clearGeminiKey();
+});
+
+ipcMain.on('gemini-key-open-page', () => {
+  shell.openExternal('https://aistudio.google.com/apikey');
+});
+
+ipcMain.on('gemini-key-close', () => {
+  if (geminiKeyWin && !geminiKeyWin.isDestroyed()) geminiKeyWin.close();
 });
 
 ipcMain.on('login-close', () => {

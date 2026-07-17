@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Gemini API Key</title>
+    <link rel="stylesheet" href="geminiKey.css" />
+  </head>
+  <body>
+    <h1>AI lyrics fallback</h1>
+    <p class="hint">
+      Last resort only, used when nothing else finds synced lyrics for a
+      song — Gemini transcribes it directly from its YouTube video. Needs
+      your own free API key; nothing is shared between installs, so this
+      never runs at all until you add one.
+    </p>
+    <a href="#" id="get-key-link">Get a free key from Google AI Studio →</a>
+    <label for="key-input">API key</label>
+    <input type="password" id="key-input" placeholder="Paste your key here" autocomplete="off" spellcheck="false" />
+    <p id="status" class="status"></p>
+    <div class="actions">
+      <button id="clear-btn">Clear</button>
+      <button id="save-btn">Save</button>
+      <button id="close-btn">Close</button>
+    </div>
+    <script src="geminiKey.js"></script>
+  </body>
+</html>

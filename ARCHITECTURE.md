@@ -20,11 +20,13 @@ Windows SMTC  --(poll every 800ms, JSON lines over stdout)-->  nowplaying.ps1
                                                                      |               |
                                                               cache miss       cache hit
                                                                      |               |
-                                       1. ytmusic.js   (authenticated, if logged in) |
-                                       2. lrclib.js    (synced, keyless)             |
-                                       3. ytmusic.js   (plain text, unauthenticated) |
-                                       4. lyricsOvh.js (plain text, keyless)         |
-                                       5. genius.js    (plain text, scraped)         |
+                                       1. ytmusic.js     (timed, authenticated)      |
+                                       2. lrclib.js      (timed, keyless)            |
+                                       3. ytmusic.js     (timed, unauthenticated)    |
+                                       4. geminiLyrics.js (timed, AI, needs own key) |
+                                       -- static-only fallback, if nothing above is timed --
+                                       5. lyricsOvh.js   (plain text, keyless)       |
+                                       6. genius.js      (plain text, scraped)       |
                                                                      |               |
                                                           lyricsCache.js.set()       |
                                                                      |               |
@@ -127,34 +129,95 @@ playback, mainstream official uploads), neither step matches anything, so
 this is a no-op; it only changes behavior for the messy-metadata case it was
 built for.
 
-## Why five lyrics sources, in that order
+## Why the lyrics chain is timed-first, with AI as a last resort
 
-No single source has both good coverage and line-level sync without
-authentication, so the chain tries progressively less-ideal (and, for the
-last two, progressively less-reliable) sources until one has something:
+The chain optimizes for one thing above all: never settle for static
+(proportional-scroll) lyrics while there's still a chance at real per-line
+sync. It tries sources in this order, and — critically — a source returning
+*non-timed* lyrics no longer stops the search; it's remembered as
+`staticFallback` (first one found wins) and the chain keeps going, since a
+later source might still produce a timed result. Only once every timed
+attempt has failed does the search settle for that remembered static result.
 
-- **YT Music's own timed-lyrics renderer** only responds to authenticated
-  requests — YouTube Music's web client won't return it to an anonymous
-  session. When the user has signed in (see `auth.js`), this is tried first,
-  since it's literally what their Premium account would show.
-- **LRCLIB** is free, keyless, and has synced (LRC) lyrics for a large slice
-  of mainstream and non-mainstream music, but it's a community database, so
-  coverage isn't universal.
-- **YT Music's plain-text lyrics** (Musixmatch-sourced, via the *unauthenticated*
-  `next`/`browse` InnerTube endpoints) has good raw coverage but no per-line
-  timestamps.
-- **lyrics.ovh** is another free, keyless, plain-text API — tried next since
-  it's still a real API call (fast, stable response shape) before resorting
-  to scraping.
-- **Genius (scraped)**, last: searches Genius's public search endpoint (no
-  API key — the same one that backs the search box on genius.com) for the
-  song, then scrapes the lyrics text out of the matched page's HTML. Kept
-  last on purpose — scraping page markup has no versioning guarantee and
-  breaks the moment Genius changes their page structure, unlike the other
-  four sources' actual APIs.
+1. **YT Music's own timed-lyrics renderer, authenticated** — only responds to
+   authenticated requests (YouTube Music's web client won't return it to an
+   anonymous session). When the user has signed in (see `auth.js`), this is
+   tried first, since it's literally what their Premium account would show.
+   If it has no timed lyrics but does have plain text, that text is kept as
+   `staticFallback` and the chain continues.
+2. **LRCLIB** — free, keyless, synced (LRC) lyrics for a large slice of
+   mainstream and non-mainstream music, but it's a community database, so
+   coverage isn't universal. Same deal: an untimed ("plain") LRCLIB match is
+   kept as a fallback candidate, not treated as a final answer.
+3. **YT Music again, unauthenticated** — one more attempt at *timed* lyrics
+   (Musixmatch-sourced, via the unauthenticated `next`/`browse` InnerTube
+   endpoints) in case authentication wasn't the blocker. Its static text is
+   likewise only kept as a fallback candidate if none is saved yet.
+4. *(Not implemented)* A fourth free timed-lyrics source was investigated —
+   NetEase Cloud Music's API — but its lyrics endpoints now require
+   request-level AES+RSA encryption rather than a plain keyless GET, so it
+   was skipped rather than reverse-engineering that scheme for a single
+   extra source.
+5. **Gemini AI transcription** — the true last resort before giving up on
+   timing entirely. If nothing above produced a timed result, and the user
+   has configured their own free Gemini API key (see below), `geminiLyrics.js`
+   hands Gemini the song's YouTube video URL directly via its native
+   video-ingestion input (`fileData.fileUri` — the same mechanism Gemini uses
+   to answer questions about a YouTube video's content) and asks it to
+   transcribe the song with a `{timeMs, text}` per line, matching the shape
+   every other timed source already produces. No audio capture or download
+   happens on our end — Gemini fetches and watches the video itself.
+6. **Static-only fallback** — reached only if every timed attempt above
+   failed *and* no `staticFallback` was captured along the way (i.e. no
+   Gemini key configured, or Gemini also failed/found nothing). At this
+   point, and only this point, two more plain-text sources are tried purely
+   to have *something* to show:
+   - **lyrics.ovh**, a free, keyless, plain-text API — a real API call
+     before resorting to scraping.
+   - **Genius (scraped)**, last: searches Genius's public search endpoint
+     (no API key — the same one that backs the search box on genius.com),
+     then scrapes the lyrics text out of the matched page's HTML. Kept last
+     on purpose — scraping page markup has no versioning guarantee and
+     breaks the moment Genius changes their page structure, unlike every
+     other source's actual API.
 
-All three plain-text sources (3–5) show with proportional auto-scroll
+Whichever plain-text result ends up used (from steps 1–3 or the two
+dedicated static sources in step 6) is shown with proportional auto-scroll
 standing in for real per-line sync.
+
+### AI lyrics fallback: bring your own key
+
+Step 5 requires the user's own Google AI Studio API key — set up via tray
+menu → *Settings* → *Set up AI lyrics fallback…*, which opens a small window
+(`geminiKey.html`/`.js`) to paste a key, get a link to
+`aistudio.google.com/apikey` to create one for free, or clear an existing
+one. The key is stored the same way YouTube Music login credentials are
+(`geminiKeyStore.js`, mirroring `auth.js`'s `safeStorage`-encrypted file —
+Windows DPAPI at rest, never plaintext, never in git), and read back via
+`getGeminiApiKey()` in `main.js` (env var `GEMINI_API_KEY` for local
+development, falling back to the stored key).
+
+This has to be BYOK rather than a key embedded in the app:
+
+- **Shared quota exhausts almost immediately.** Google AI Studio's free tier
+  is genuinely free (no card required — the actual friction is that it
+  requires creating a Google Cloud *project* first, not billing) but capped
+  per key (1,500 requests/day on the Flash models as of this writing).
+  Shared across every install, that's gone in minutes.
+- **A key embedded in a distributed app isn't secret.** Anyone can extract
+  it from the packaged binary, at which point it's not "the app's key"
+  anymore, it's a public one.
+- **Google's ToS doesn't allow redistributing a personal key** this way
+  regardless.
+
+If no key is configured, step 5 is skipped entirely (logged as
+`[lyrics] gemini: no videoId to give it, skipping` never even fires — the
+`if (!lyrics && geminiApiKey)` guard short-circuits first) and the chain
+falls straight through to the static-only fallback in step 6 — meaning
+lyrics.ovh and Genius (scraped), alongside whatever YT Music/LRCLIB static
+text steps 1–3 already captured, remain the complete fallback chain for
+every user who hasn't set up a key. Nothing about the app's core behavior
+depends on Gemini being configured.
 
 ## Lyrics cache (`lyricsCache.js`)
 
@@ -196,16 +259,16 @@ README), where the failure mode is Chromium doing nothing at all, with no
 exception to catch in the first place.
 
 `handleTrackTick`'s lyrics lookup is the other big one: every source in the
-five-source fallback chain logs a hit/miss/error as it's tried (`[lyrics]
-ytmusic-timed-auth: ...`, `[lyrics] lrclib: ...`, etc.), ending in `[lyrics]
-result: source=X (timed|static|none)` — which source actually won and why
-the ones before it in priority order didn't, all in one place. This is the
-tool for "why did I get synced lyrics for a song and someone else didn't" —
-motivated by exactly that report (Clipse's "P.O.V." resolving to different
-sources for different people) — rather than only being able to speculate
-about which of five network calls behaved differently. Tray menu → Settings →
-*Open log file* opens the containing folder directly, for sending it to
-someone else debugging the same song.
+fallback chain logs a hit/miss/error as it's tried (`[lyrics]
+ytmusic-timed-auth: ...`, `[lyrics] lrclib: ...`, `[lyrics] gemini: ...`,
+etc.), ending in `[lyrics] result: source=X (timed|static|none)` — which
+source actually won and why the ones before it in priority order didn't, all
+in one place. This is the tool for "why did I get synced lyrics for a song
+and someone else didn't" — motivated by exactly that report (Clipse's
+"P.O.V." resolving to different sources for different people) — rather than
+only being able to speculate about which network call behaved differently.
+Tray menu → Settings → *Open log file* opens the containing folder directly,
+for sending it to someone else debugging the same song.
 
 ## Click-through with one interactive hole
 
