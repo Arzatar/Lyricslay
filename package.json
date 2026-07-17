@@ -1,6 +1,6 @@
 {
   "name": "lyricslay",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Real-time, synced lyrics overlay for YouTube Music, always on top of any application.",
   "main": "src/main.js",
   "private": true,

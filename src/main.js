@@ -16,7 +16,7 @@ const logger = require('./logger');
 const updater = require('./updater');
 const {
   trackKeyFor,
-  topCenterBounds: computeTopCenterBounds,
+  anchoredBounds: computeAnchoredBounds,
   cycleValue,
   resizeKeepingTopLeftAnchored,
 } = require('./utils');
@@ -106,6 +106,7 @@ let lastTrackData = null; // most recent now-playing tick, so login can bust its
 let loginWin = null;
 let lastVerificationUrl = null;
 let shortcutsWin = null;
+let positionPickerWin = null;
 // Last height the renderer asked for via 'set-desired-height' — kept around so
 // applyDesiredSize() can be re-run from win's 'moved' event (e.g. dragged to a
 // different-sized monitor) without needing the renderer to resend it.
@@ -177,7 +178,7 @@ function doLogout() {
 }
 
 function topCenterBounds() {
-  return computeTopCenterBounds(screen.getPrimaryDisplay().workArea);
+  return computeAnchoredBounds('top-center', screen.getPrimaryDisplay().workArea);
 }
 
 // Clears `appName`'s remembered position (if it has one) so the next time
@@ -571,6 +572,10 @@ function updateTrayMenu() {
     },
     { type: 'separator' },
     {
+      label: 'Move to…',
+      click: openPositionPicker,
+    },
+    {
       label: 'Reset position',
       submenu: resetPositionSubmenu(),
     },
@@ -742,6 +747,56 @@ function openShortcutsWindow() {
   shortcutsWin = createShortcutsWindow();
   shortcutsWin.on('closed', () => {
     shortcutsWin = null;
+  });
+}
+
+// A visual 3x3 anchor grid (see renderer/positionPicker.html) — clicking a
+// cell moves the overlay straight to that spot, matching the "top-left,
+// top-center, ..., bottom-right" grid this mirrors 1:1 (see anchoredBounds
+// in utils.js). Small and frameless so it reads as a popover, not a real
+// window.
+function createPositionPickerWindow() {
+  const workArea = screen.getPrimaryDisplay().workArea;
+  const width = 180;
+  const height = 210;
+  const w = new BrowserWindow({
+    width,
+    height,
+    x: workArea.x + Math.round((workArea.width - width) / 2),
+    y: workArea.y + Math.round((workArea.height - height) / 2),
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    title: 'Move overlay',
+    webPreferences: {
+      preload: path.join(__dirname, 'position-picker-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  w.setMenuBarVisibility(false);
+  w.loadFile(path.join(__dirname, 'renderer', 'positionPicker.html'));
+  // Reads as a popover, not a real window — losing focus (clicked elsewhere,
+  // alt-tabbed away) is as much a "done here" signal as actually picking a
+  // cell, so close it either way instead of leaving a stray always-on-top
+  // window sitting on screen.
+  w.on('blur', () => {
+    if (!w.isDestroyed()) w.close();
+  });
+  return w;
+}
+
+function openPositionPicker() {
+  if (positionPickerWin && !positionPickerWin.isDestroyed()) {
+    positionPickerWin.focus();
+    return;
+  }
+  positionPickerWin = createPositionPickerWindow();
+  positionPickerWin.on('closed', () => {
+    positionPickerWin = null;
   });
 }
 
@@ -949,6 +1004,23 @@ ipcMain.on('set-picker-open', (_e, open) => {
 
 ipcMain.on('login-reopen-browser', () => {
   if (lastVerificationUrl) shell.openExternal(lastVerificationUrl);
+});
+
+ipcMain.on('position-picker-choose', (_e, anchor) => {
+  if (win && !win.isDestroyed()) {
+    // Keeps the overlay's current size — this repositions it, not resizes
+    // it. win.setBounds() below fires 'move'/'resize', which saveBounds()
+    // already listens for, so this is remembered per-app exactly like a
+    // manual drag would be.
+    const current = win.getBounds();
+    const bounds = computeAnchoredBounds(anchor, screen.getPrimaryDisplay().workArea, {
+      width: current.width,
+      height: current.height,
+    });
+    win.setBounds(bounds);
+    win.moveTop();
+  }
+  if (positionPickerWin && !positionPickerWin.isDestroyed()) positionPickerWin.close();
 });
 
 ipcMain.on('login-close', () => {

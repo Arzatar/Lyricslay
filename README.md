@@ -104,6 +104,13 @@ position — the current one first, then every other one below — and clicking
 one clears just that app's saved spot (snapping the overlay back to
 top-center immediately if that's the app currently behind it).
 
+**Snapping to a spot:** tray menu → *Move to…* opens a small 3x3 grid —
+top-left through bottom-right — that mirrors the screen's own layout; click
+a cell and the overlay jumps straight there at whatever size it already is.
+Counts as a drag for per-app position purposes (see above), so whichever app
+is currently behind the overlay remembers that spot the same as if you'd
+dragged it there by hand.
+
 **Visible lines:** tray menu → *Settings* → *More/Fewer visible lines* cycles
 the window between showing 1, 3, or 5 lines of lyrics (default 3) — it
 resizes the window itself to fit exactly that many lines, growing/shrinking
@@ -209,6 +216,10 @@ src/
   renderer/shortcuts.html, The rebindable-hotkeys window's UI: lists every
     shortcuts.css,          action, lets you press a new key combination for
     shortcuts.js            one, and reset all of them back to defaults
+  position-picker-preload.js IPC bridge for the "Move to…" position picker
+  renderer/positionPicker.html, The 3x3 anchor-grid popover's UI — click a
+    positionPicker.css,       cell, overlay snaps there (see anchoredBounds
+    positionPicker.js         in utils.js)
   textMatch.js           Shared fuzzy title/artist matching (used by ytmusic.js,
                           lrclib.js, and genius.js to pick the best search result)
   utils.js                Small pure helpers (track identity key, window placement,

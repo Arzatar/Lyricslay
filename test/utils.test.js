@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { trackKeyFor, topCenterBounds, cycleValue, resizeKeepingTopLeftAnchored } = require('../src/utils');
+const { trackKeyFor, anchoredBounds, cycleValue, resizeKeepingTopLeftAnchored } = require('../src/utils');
 
 test('trackKeyFor combines title and artist into a stable key', () => {
   assert.equal(trackKeyFor('Song', 'Artist'), 'Song::Artist');
@@ -23,32 +23,48 @@ test('trackKeyFor changes when either title or artist changes', () => {
   assert.notEqual(trackKeyFor('Song', 'Other Artist'), base);
 });
 
-test('topCenterBounds horizontally centers the window in the given work area', () => {
+test('anchoredBounds centers both axes for "middle-center"', () => {
   const workArea = { x: 0, y: 0, width: 2560, height: 1392 };
-  const bounds = topCenterBounds(workArea, { width: 620, height: 260, margin: 24 });
+  const bounds = anchoredBounds('middle-center', workArea, { width: 620, height: 260, margin: 24 });
   assert.equal(bounds.x, Math.round((2560 - 620) / 2));
-  assert.equal(bounds.y, 24);
-  assert.equal(bounds.width, 620);
-  assert.equal(bounds.height, 260);
+  assert.equal(bounds.y, Math.round((1392 - 260) / 2));
 });
 
-test('topCenterBounds offsets by a non-zero work area origin (secondary monitor)', () => {
+test('anchoredBounds places each of the 9 grid cells at the expected edge/center', () => {
+  const workArea = { x: 0, y: 0, width: 2560, height: 1392 };
+  const size = { width: 620, height: 260, margin: 24 };
+  const centerX = Math.round((2560 - 620) / 2);
+  const centerY = Math.round((1392 - 260) / 2);
+  const right = 2560 - 620 - 24;
+  const bottom = 1392 - 260 - 24;
+
+  assert.deepEqual(anchoredBounds('top-left', workArea, size), { x: 24, y: 24, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('top-center', workArea, size), { x: centerX, y: 24, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('top-right', workArea, size), { x: right, y: 24, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('middle-left', workArea, size), { x: 24, y: centerY, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('middle-right', workArea, size), { x: right, y: centerY, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('bottom-left', workArea, size), { x: 24, y: bottom, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('bottom-center', workArea, size), { x: centerX, y: bottom, width: 620, height: 260 });
+  assert.deepEqual(anchoredBounds('bottom-right', workArea, size), { x: right, y: bottom, width: 620, height: 260 });
+});
+
+test('anchoredBounds offsets by a non-zero work area origin (secondary monitor)', () => {
   const workArea = { x: 1920, y: 100, width: 1600, height: 900 };
-  const bounds = topCenterBounds(workArea, { width: 620, height: 260, margin: 24 });
+  const bounds = anchoredBounds('top-center', workArea, { width: 620, height: 260, margin: 24 });
   assert.equal(bounds.x, 1920 + Math.round((1600 - 620) / 2));
   assert.equal(bounds.y, 100 + 24);
 });
 
-test('topCenterBounds falls back to sensible defaults when size is omitted', () => {
+test('anchoredBounds falls back to sensible defaults when size is omitted', () => {
   const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
-  const bounds = topCenterBounds(workArea);
+  const bounds = anchoredBounds('top-center', workArea);
   assert.equal(bounds.width, Math.round(1920 / 3));
   assert.equal(bounds.height, 260);
 });
 
-test('topCenterBounds defaults width to a third of the work area (per-monitor scaling)', () => {
+test('anchoredBounds defaults width to a third of the work area (per-monitor scaling)', () => {
   const workArea = { x: 1920, y: 0, width: 2560, height: 1440 };
-  const bounds = topCenterBounds(workArea);
+  const bounds = anchoredBounds('top-center', workArea);
   assert.equal(bounds.width, Math.round(2560 / 3));
 });
 

@@ -1,0 +1,81 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #14141a;
+  color: #f2f2f5;
+  font-family: 'Segoe UI', -apple-system, sans-serif;
+  user-select: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 14px;
+  gap: 10px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: rgba(242, 242, 245, 0.7);
+  text-align: center;
+}
+
+/* The grid's own layout mirrors the screen's — a click on the top-left cell
+   is a click on where the overlay will land, top-left of the screen — so no
+   separate labels are needed beyond the hover tooltip. */
+#grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: 6px;
+  width: 132px;
+  height: 132px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.cell {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  position: relative;
+}
+
+.cell:hover {
+  background: #6c5ce7;
+  border-color: #6c5ce7;
+}
+
+.cell:active {
+  background: #5849c4;
+  border-color: #5849c4;
+}
+
+/* A small dot centered in each cell, purely decorative — gives the grid a
+   less blank/button-grid look and reinforces "this is a spot", not a form. */
+.cell::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(242, 242, 245, 0.6);
+  transform: translate(-50%, -50%);
+}
+
+.cell:hover::after {
+  background: #fff;
+}
