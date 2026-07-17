@@ -169,6 +169,18 @@ per-song sync offset described above (see *Sync offset*), which is why
 resetting/adjusting sync doesn't need a fresh lyrics lookup, and why deleting
 a song's cache file also clears any offset you'd set for it.
 
+## Diagnosing "why did this song's lyrics come out wrong"
+
+Every attempt in the five-source fallback chain (see *Features* above) gets
+logged as it happens — which source hit, which missed, and why — ending in a
+line naming which one actually won, e.g. `[lyrics] result: source=lrclib-
+synced (timed)`. Useful when the same song looks different for two people
+(different source, or one hit synced and the other only got a static match)
+and there's no other way to tell which of five network calls behaved
+differently for each of you. Tray menu → *Settings* → *Open log file* opens
+`%APPDATA%\lyricslay\overlay.log`'s containing folder directly — handy for
+sending it to whoever else is comparing notes on the same song.
+
 ## Known limitations
 
 - **True exclusive fullscreen** (DirectX exclusive mode, not borderless/windowed)

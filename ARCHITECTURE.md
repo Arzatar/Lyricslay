@@ -189,12 +189,23 @@ could ever see it. `logger.js` appends timestamped lines to
 `<userData>/overlay.log` instead (fresh file each launch, no rotation — log
 volume here is low enough not to need one), and `main.js` wires three things
 into it: uncaught exceptions/rejections, the renderer's own `console.log`
-output (via `webContents.on('console-message', ...)`), and a few explicit
-diagnostic points (e.g. IPC handlers whose failure would otherwise be
-silent). This is the first thing to check when something silently doesn't
-work — most notably the color picker (see *Lyrics color* in the README),
-where the failure mode is Chromium doing nothing at all, with no exception to
-catch in the first place.
+output (via `webContents.on('console-message', ...)`), and a set of explicit
+diagnostic points. This is the first thing to check when something silently
+doesn't work — most notably the color picker (see *Lyrics color* in the
+README), where the failure mode is Chromium doing nothing at all, with no
+exception to catch in the first place.
+
+`handleTrackTick`'s lyrics lookup is the other big one: every source in the
+five-source fallback chain logs a hit/miss/error as it's tried (`[lyrics]
+ytmusic-timed-auth: ...`, `[lyrics] lrclib: ...`, etc.), ending in `[lyrics]
+result: source=X (timed|static|none)` — which source actually won and why
+the ones before it in priority order didn't, all in one place. This is the
+tool for "why did I get synced lyrics for a song and someone else didn't" —
+motivated by exactly that report (Clipse's "P.O.V." resolving to different
+sources for different people) — rather than only being able to speculate
+about which of five network calls behaved differently. Tray menu → Settings →
+*Open log file* opens the containing folder directly, for sending it to
+someone else debugging the same song.
 
 ## Click-through with one interactive hole
 

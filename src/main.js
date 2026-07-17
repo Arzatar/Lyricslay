@@ -547,6 +547,20 @@ function updateTrayMenu() {
           label: `Delay lyrics sync (${formatAccelerator(shortcutFor('delayLyrics'))})`,
           click: () => changeOffset(100),
         },
+        { type: 'separator' },
+        {
+          // Every lyrics source attempt now gets logged here (see
+          // handleTrackTick) — which one won for a given song, why the
+          // earlier ones in the fallback chain didn't, and why one person's
+          // "P.O.V." got synced lyrics while someone else's didn't. Opens
+          // the containing folder (not the file directly) so it's one click
+          // to also grab overlay.log's neighbors if a report needs them.
+          label: 'Open log file',
+          click: () => {
+            const logPath = logger.getLogFilePath();
+            if (logPath) shell.showItemInFolder(logPath);
+          },
+        },
       ],
     },
     {
@@ -672,6 +686,7 @@ function resetOffset() {
 // currently has bad data instead of only the "should now use auth" case.
 function retryLyrics() {
   if (!lastTrackData?.title || !lyricsCache) return;
+  logger.log(`[lyrics] manual re-search requested for "${lastTrackData.title}" — "${lastTrackData.artist}"`);
   lyricsCache.delete(lastTrackData.title, lastTrackData.artist);
   currentTrackKey = null;
   handleTrackTick(lastTrackData);
@@ -826,8 +841,11 @@ async function handleTrackTick(data) {
   // whatever else happens to touch the tray next.
   updateTrayMenu();
 
+  logger.log(`[lyrics] new track: "${data.title}" — "${data.artist}"`);
+
   const cached = lyricsCache?.get(data.title, data.artist);
   if (cached) {
+    logger.log(`[lyrics] cache hit, source=${cached.source} ${cached.timed ? '(timed)' : cached.static ? '(static)' : '(none)'}`);
     currentLyrics = cached;
     win?.webContents.send('lyrics-result', { title: data.title, artist: data.artist, lyrics: cached });
     return;
@@ -840,6 +858,7 @@ async function handleTrackTick(data) {
     const durationSec = Number.isFinite(data.durationMs) && data.durationMs > 0
       ? data.durationMs / 1000
       : null;
+    logger.log(`[lyrics] cache miss, searching (durationSec=${durationSec}, authed=${!!ytmAuth})`);
 
     let lyrics = null;
     let ytmResult = null;
@@ -855,10 +874,14 @@ async function handleTrackTick(data) {
         if (myToken !== fetchToken) return;
         if (ytmResult?.timed) {
           lyrics = { timed: ytmResult.timed, static: null, source: 'ytmusic-timed-auth' };
+          logger.log(`[lyrics] ytmusic-timed-auth: hit (${ytmResult.timed.length} lines)`);
+        } else {
+          logger.log(`[lyrics] ytmusic-timed-auth: no timed lyrics (static=${!!ytmResult?.static})`);
         }
-      } catch {
+      } catch (err) {
         // refresh token got revoked/expired server-side — fall back to the
         // unauthenticated sources below rather than failing the whole lookup.
+        logger.log('[lyrics] ytmusic-timed-auth: auth failed, falling back unauthenticated:', err?.message || err);
         ytmAuth = null;
         updateTrayMenu();
       }
@@ -869,8 +892,12 @@ async function handleTrackTick(data) {
       if (myToken !== fetchToken) return;
       if (synced?.timed) {
         lyrics = { timed: synced.timed, static: null, source: 'lrclib-synced' };
+        logger.log(`[lyrics] lrclib: hit, timed (${synced.timed.length} lines)`);
       } else if (synced?.plain) {
         lyrics = { timed: null, static: synced.plain, source: 'lrclib-plain' };
+        logger.log('[lyrics] lrclib: hit, plain text only (no synced lyrics for this match)');
+      } else {
+        logger.log('[lyrics] lrclib: no match');
       }
     }
 
@@ -881,6 +908,9 @@ async function handleTrackTick(data) {
       if (myToken !== fetchToken) return;
       if (fallback?.static) {
         lyrics = { timed: null, static: fallback.static, source: 'ytmusic-static' };
+        logger.log('[lyrics] ytmusic-static: hit');
+      } else {
+        logger.log('[lyrics] ytmusic-static: no match');
       }
     }
 
@@ -891,9 +921,15 @@ async function handleTrackTick(data) {
       try {
         const ovh = await lyricsOvh.fetchLyrics(data.title, data.artist);
         if (myToken !== fetchToken) return;
-        if (ovh?.plain) lyrics = { timed: null, static: ovh.plain, source: 'lyricsovh-plain' };
-      } catch {
+        if (ovh?.plain) {
+          lyrics = { timed: null, static: ovh.plain, source: 'lyricsovh-plain' };
+          logger.log('[lyrics] lyricsovh: hit');
+        } else {
+          logger.log('[lyrics] lyricsovh: no match');
+        }
+      } catch (err) {
         // API down/unreachable — fall through to the next source
+        logger.log('[lyrics] lyricsovh: request failed:', err?.message || err);
       }
     }
 
@@ -901,10 +937,16 @@ async function handleTrackTick(data) {
       try {
         const scraped = await genius.fetchLyrics(data.title, data.artist);
         if (myToken !== fetchToken) return;
-        if (scraped?.plain) lyrics = { timed: null, static: scraped.plain, source: 'genius-scraped' };
-      } catch {
+        if (scraped?.plain) {
+          lyrics = { timed: null, static: scraped.plain, source: 'genius-scraped' };
+          logger.log('[lyrics] genius: hit');
+        } else {
+          logger.log('[lyrics] genius: no match');
+        }
+      } catch (err) {
         // scraping is inherently fragile (site markup can change anytime) — never
         // let it fail the whole lookup
+        logger.log('[lyrics] genius: request failed:', err?.message || err);
       }
     }
 
@@ -912,6 +954,7 @@ async function handleTrackTick(data) {
       lyrics = { timed: null, static: null, source: 'none' };
     }
 
+    logger.log(`[lyrics] result: source=${lyrics.source} ${lyrics.timed ? '(timed)' : lyrics.static ? '(static)' : '(none)'}`);
     lyricsCache?.set(data.title, data.artist, lyrics);
     // Re-read from the cache rather than using `lyrics` as-is so the renderer gets
     // the canonical stored shape — specifically offsetMs, which set() defaults to 0
@@ -924,6 +967,7 @@ async function handleTrackTick(data) {
     });
   } catch (err) {
     if (myToken !== fetchToken) return;
+    logger.log('[lyrics] lookup threw:', err?.stack || err?.message || err);
     win?.webContents.send('lyrics-result', {
       title: data.title,
       artist: data.artist,
