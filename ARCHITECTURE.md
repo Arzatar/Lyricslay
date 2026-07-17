@@ -459,6 +459,33 @@ documents; `CLIENT_ID`/`CLIENT_SECRET` in `auth.js` are the same public "TV
 and Limited Input device" OAuth client published by that project and by
 `yt-dlp` for this exact purpose — not a secret tied to this app or its users.
 
+### Known limitation: Google now rejects this token for InnerTube
+
+As of mid-2026, the access token this flow produces is consistently rejected
+by every InnerTube endpoint this app calls (`search` and `next`) with HTTP
+400 `"Request contains an invalid argument"` the moment `Authorization:
+Bearer <token>` is present — regardless of the `key` query param, the
+"Songs" search filter, or which `clientName` (`WEB_REMIX`, `ANDROID_MUSIC`,
+`IOS_MUSIC`) the request claims to be. The exact same request with that one
+header removed succeeds immediately. Verified directly against a real,
+freshly-refreshed (non-expired) token, not a guess from the error message
+alone.
+
+This isn't a bug in this app's request-building — it's Google having
+restricted the public "TV and Limited Input device" OAuth client (the same
+one `ytmusicapi`/`yt-dlp` document) from InnerTube's music surface
+server-side, unrelated to anything under this app's control, and not fixable
+by adjusting headers or the declared client identity. `handleTrackTick` in
+`main.js` already treats this correctly without knowing why it's happening:
+step 1's failure is caught, logged, and falls through to LRCLIB/unauthenticated
+sources (see *Why the lyrics chain is timed-first* above) rather than
+surfacing as a real error — so this shows up as an expected, harmless log
+line (`[lyrics] ytmusic-timed-auth: request failed, falling back
+unauthenticated: YT Music search HTTP 400`) on every track for a signed-in
+user, not a malfunction. Deliberately left attempting the authenticated call
+regardless (it fails fast, ~60-100ms) rather than special-cased/skipped, so
+it silently starts working again on its own if Google ever reverses this.
+
 ## Testable core vs. Electron glue
 
 Electron's main process (`main.js`) can't be `require`d outside an Electron
