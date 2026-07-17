@@ -88,8 +88,15 @@ function extractSongCandidates(json) {
 async function searchSong(title, artist, authHeaders) {
   const query = artist ? `${title} ${artist}` : title;
   const body = { ...baseContext(), query, params: 'EgWKAQIIAWoKEAMQBBAJEAoQBQ%3D%3D' }; // filter: Songs
-  const json = await ytFetch('search', body, authHeaders);
-  let candidates = extractSongCandidates(json);
+  let candidates = [];
+  try {
+    const json = await ytFetch('search', body, authHeaders);
+    candidates = extractSongCandidates(json);
+  } catch {
+    // Some accounts/sessions reject the "Songs" filter outright (HTTP 400)
+    // instead of just returning an empty shelf — fall through to the
+    // unfiltered retry below rather than failing the whole search over it.
+  }
 
   if (candidates.length === 0) {
     // Retry without the "Songs" filter param in case YT Music returned a different shelf layout.

@@ -106,6 +106,15 @@ let currentForegroundApp = null;
 // what Get-Process reports as ProcessName for our own window in
 // foregroundApp.ps1's output, letting it be excluded the same way in both.
 const OWN_PROCESS_NAME = path.basename(process.execPath, '.exe');
+// Windows Explorer owns the taskbar, the tray's notification area, and the
+// desktop itself — clicking the tray icon (which is how our own menu opens)
+// or the taskbar briefly reports "explorer" as the foreground window, same
+// as any real app switch would. Without excluding it here the same way
+// OWN_PROCESS_NAME is excluded above, that click gets misattributed as "the
+// user switched to Explorer," which then corrupts drag-to-save, *Move to…*,
+// and *Reset position* into operating on an "explorer" entry instead of
+// whatever app was actually behind the overlay a moment before.
+const SHELL_PROCESS_NAME = 'explorer';
 
 let currentTrackKey = null;
 let currentLyrics = null; // { timed, static, source, videoId }
@@ -350,7 +359,7 @@ function saveBounds() {
 // leaves the overlay exactly where it already is (first time switching to a
 // given app just means nothing moves until you drag it once).
 function applyForegroundApp(processName) {
-  if (!processName || processName === OWN_PROCESS_NAME) return;
+  if (!processName || processName === OWN_PROCESS_NAME || processName === SHELL_PROCESS_NAME) return;
   currentForegroundApp = processName;
   const saved = store.get('perAppBounds')[processName];
   if (saved && win && !win.isDestroyed()) {
@@ -910,39 +919,50 @@ async function handleTrackTick(data) {
       : null;
     logger.log(`[lyrics] cache miss, searching (durationSec=${durationSec}, authed=${!!ytmAuth})`);
 
-    // PROTOTYPE reordering (not committed) — timed lyrics are now the only
-    // thing that satisfies the chain; a source returning only plain/static
-    // text no longer stops the search, it just gets kept as `staticFallback`
-    // in case *nothing* ever produces timed lyrics, tried dead last instead
-    // of accepted on the spot. ytmResult/videoId gets threaded through every
-    // step so the AI fallback can reuse whichever YT Music search already
-    // resolved a videoId, without a redundant extra search call.
+    // Timed lyrics are the only thing that satisfies the chain; a source
+    // returning only plain/static text no longer stops the search, it just
+    // gets kept as `staticFallback` in case *nothing* ever produces timed
+    // lyrics, tried dead last instead of accepted on the spot.
+    // ytmResult/videoId gets threaded through every step so the AI fallback
+    // can reuse whichever YT Music search already resolved a videoId,
+    // without a redundant extra search call.
     let lyrics = null;
     let ytmResult = null;
     let staticFallback = null; // { static, source } — last resort only
 
     // Step 1: YT Music, authenticated — timed only.
     if (ytmAuth) {
+      let authHeaders = null;
       try {
         const accessToken = await ytmAuthModule.getValidAccessToken(ytmAuth);
-        const authHeaders = ytmAuthModule.buildAuthHeaders(accessToken);
-        ytmResult = await fetchLyricsForTrack(data.title, data.artist, authHeaders);
-        if (myToken !== fetchToken) return;
-        if (ytmResult?.timed) {
-          lyrics = { timed: ytmResult.timed, static: null, source: 'ytmusic-timed-auth' };
-          logger.log(`[lyrics] ytmusic-timed-auth: hit (${ytmResult.timed.length} lines)`);
-        } else {
-          logger.log(`[lyrics] ytmusic-timed-auth: no timed lyrics (static=${!!ytmResult?.static})`);
-          if (ytmResult?.static && !staticFallback) {
-            staticFallback = { static: ytmResult.static, source: 'ytmusic-static-auth' };
-          }
-        }
+        authHeaders = ytmAuthModule.buildAuthHeaders(accessToken);
       } catch (err) {
-        // refresh token got revoked/expired server-side — fall back to the
-        // unauthenticated sources below rather than failing the whole lookup.
-        logger.log('[lyrics] ytmusic-timed-auth: auth failed, falling back unauthenticated:', err?.message || err);
+        // The refresh token itself got revoked/expired server-side — this is
+        // the only case that should actually sign the user out.
+        logger.log('[lyrics] ytmusic-timed-auth: refresh failed, signing out:', err?.message || err);
         ytmAuth = null;
         updateTrayMenu();
+      }
+      if (authHeaders) {
+        try {
+          ytmResult = await fetchLyricsForTrack(data.title, data.artist, authHeaders);
+          if (myToken !== fetchToken) return;
+          if (ytmResult?.timed) {
+            lyrics = { timed: ytmResult.timed, static: null, source: 'ytmusic-timed-auth' };
+            logger.log(`[lyrics] ytmusic-timed-auth: hit (${ytmResult.timed.length} lines)`);
+          } else {
+            logger.log(`[lyrics] ytmusic-timed-auth: no timed lyrics (static=${!!ytmResult?.static})`);
+            if (ytmResult?.static && !staticFallback) {
+              staticFallback = { static: ytmResult.static, source: 'ytmusic-static-auth' };
+            }
+          }
+        } catch (err) {
+          // A single request in the lookup (search/browse) failed — the
+          // token itself is still fine, so stay signed in and just fall
+          // back to the unauthenticated sources below for this track.
+          logger.log('[lyrics] ytmusic-timed-auth: request failed, falling back unauthenticated:', err?.message || err);
+          ytmResult = null;
+        }
       }
     }
 
