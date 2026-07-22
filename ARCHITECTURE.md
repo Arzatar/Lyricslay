@@ -317,6 +317,36 @@ hiragana/katakana/kanji can still follow along and sing. Three pieces:
   immediately in their original text first, same progressive-enhancement feel
   as the AI transcription fallback itself.
 
+## Guarding against a stale lyrics fetch winning a race (`fetchToken`)
+
+`handleTrackTick` fires on every SMTC tick, but a lyrics lookup can take
+seconds (network calls, sometimes multiple fallback sources or an AI call)
+— long enough that the *next* track can start, and even finish its own
+lookup, before an earlier one's async chain gets around to writing its
+result. `fetchToken` is a module-level counter bumped once per real track
+change (`const myToken = ++fetchToken`, right where `currentTrackKey` is
+also updated); every checkpoint inside the async fetch chain compares its
+own captured `myToken` against the *current* `fetchToken` and bails out the
+instant they no longer match, i.e. the moment some other track change has
+happened since this particular lookup started.
+
+The bump has to happen unconditionally for *every* track change — including
+the fast cache-hit path that returns immediately with no fetch of its own —
+not just when a fresh network fetch is about to start. Confirmed directly
+why: YT Music playing (track A, cached) → Spotify opened and played (track
+B, cache miss, fetch kicked off) → Spotify paused, back to YT Music (track A
+again, this time a cache *hit*) — track A's cache hit updated
+`currentTrackKey` but, before this fix, never touched `fetchToken`, so
+track B's still-in-flight fetch's guard (`myToken !== fetchToken`) never
+tripped. B's stale result landed *after* A's correct cache-hit result had
+already displayed, silently overwriting the right song's lyrics with the
+wrong song's — while the title/artist label above it correctly still said
+track A, since that's driven by the separate `now-playing` tick rather than
+the lyrics result. Bumping the counter on the cache-hit path too closes
+this: any fetch older than the *current* track change is guaranteed stale
+and gets discarded, regardless of which path (cache hit or fresh fetch) the
+current track change resolves through.
+
 ## Lyrics cache (`lyricsCache.js`)
 
 Every lyrics lookup — successful or not — is written to

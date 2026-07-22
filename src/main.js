@@ -984,6 +984,15 @@ async function handleTrackTick(data) {
   if (key === currentTrackKey) return;
   currentTrackKey = key;
   currentLyrics = null;
+  // Bumped unconditionally on every real track change, before knowing yet
+  // whether this resolves via a cache hit or a fresh fetch — a fast-path
+  // cache hit still needs to invalidate whatever fetch was already in
+  // flight for the *previous* track. Without this, switching A -> B -> back
+  // to A while B's lookup is still running let B's stale result land after
+  // A's cache-hit result already displayed, silently overwriting the
+  // correct lyrics with the wrong song's (confirmed directly: YT Music ->
+  // Spotify -> back to YT Music mid-search did exactly this).
+  const myToken = ++fetchToken;
   // Enables "Re-search lyrics for this song" (disabled until there's a track to
   // retry) — the tray menu is only rebuilt on explicit actions, not every tick,
   // so a real track change needs its own trigger here rather than relying on
@@ -1003,7 +1012,6 @@ async function handleTrackTick(data) {
 
   win?.webContents.send('lyrics-loading', { title: data.title, artist: data.artist });
 
-  const myToken = ++fetchToken;
   try {
     const durationSec = Number.isFinite(data.durationMs) && data.durationMs > 0
       ? data.durationMs / 1000
