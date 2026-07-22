@@ -27,14 +27,21 @@ async function generateContent(model, apiKey, body) {
 }
 
 // Calls `buildBody(model)` -> request body for each model in MODELS in turn,
-// passing each response to `onResponse(res, model)` to parse. `onResponse`
-// returns the parsed result (any truthy value) to stop and return it, or a
-// falsy value to mean "no usable result, but don't try another model either"
-// (stops immediately, e.g. valid response but genuinely empty lyrics).
-// A non-ok HTTP response always moves on to the next model. Throws only once
-// every model has failed outright, so the caller handles one real error
-// instead of one per candidate. `onAttempt(model, outcome)` is an optional
-// logging hook.
+// passing each response to `onResponse(json)` to parse. Any non-ok HTTP
+// response, network error, OR a falsy return from `onResponse` (couldn't
+// parse it, or the model just didn't follow the requested shape) all move on
+// to the next model — verified this needs to include that last case
+// directly: asked for a same-length-as-input array back for a repetitive
+// 151-line song, and one candidate model returned valid JSON that quietly
+// collapsed some lines anyway despite being told not to. Stopping at that
+// "technically a response, but not a usable one" point instead of trying
+// the next candidate meant the whole feature silently failed on that model
+// alone, even though the very next one in the list handled the same input
+// correctly. Returns { result, model } from whichever model actually
+// produced something usable, or null if every model responded without
+// throwing but none had anything usable, or throws once every model failed
+// outright with no usable response from any of them. `onAttempt(model,
+// outcome)` is an optional logging hook.
 async function tryModels(apiKey, buildBody, onResponse, onAttempt) {
   let lastError = null;
   for (const model of MODELS) {
@@ -57,10 +64,12 @@ async function tryModels(apiKey, buildBody, onResponse, onAttempt) {
     const json = await res.json();
     const result = await onResponse(json);
     onAttempt?.(model, result ? 'hit' : 'no usable result');
-    return result ? { result, model } : null;
+    if (result) return { result, model };
+    lastError = null; // this model responded fine, it just had nothing usable — not an error to report
   }
 
-  throw lastError || new Error('Gemini: all candidate models failed');
+  if (lastError) throw lastError;
+  return null;
 }
 
 module.exports = { MODELS, tryModels };

@@ -14,12 +14,22 @@
 
 const { tryModels } = require('./geminiClient');
 
-const LINES_PROMPT = `The following is a JSON array of song lyric lines, some
-or all of which are in Japanese. Convert every line to its romaji
-(Hepburn-style Latin-script phonetic reading) — leave any line that's
-already non-Japanese (e.g. an English chorus) unchanged. Return ONLY a JSON
-array of strings, the same length and order as the input, one romaji string
-per input line, no markdown or commentary:
+// Lines are sent tagged with their own index (rather than a bare array of
+// strings) and asked to come back the same way, one output object per
+// input index — not because the model reliably honors that (see below), but
+// so a partial/imperfect response is still usable: parseLinesResponse keeps
+// whatever indices it got a valid answer for, and fetchRomajiLines falls
+// back to each missing line's original (Japanese) text rather than throwing
+// the whole conversion away over a handful of dropped lines.
+const LINES_PROMPT = `The following is a JSON array of objects, each with an
+index "i" and a song lyric line "t", some or all of which are in Japanese.
+Convert every line's "t" to its romaji (Hepburn-style Latin-script phonetic
+reading) — leave any line that's already non-Japanese (e.g. an English
+chorus) unchanged. Return ONLY a JSON array of objects, one per input
+object, in the same shape but with "t" replaced by "r" holding the romaji:
+[{"i": <the same index>, "r": "<romaji>"}, ...]. Every index in the input
+must appear exactly once in the output, even when two lines have identical
+or very similar text — do not merge, skip, or deduplicate by index:
 
 `;
 
@@ -31,7 +41,13 @@ converted text — no markdown, no commentary, no extra explanation:
 
 `;
 
-function parseLinesResponse(json, expectedLength) {
+// Returns a Map<index, romajiText> of whatever indices the model actually
+// returned a valid answer for — deliberately not all-or-nothing on length,
+// since verified directly that models don't reliably preserve every index
+// for long/repetitive line lists (a 151-line song came back short even when
+// explicitly told not to merge anything). null only if literally nothing
+// usable came back at all.
+function parseLinesResponse(json) {
   const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) return null;
   let parsed;
@@ -40,9 +56,15 @@ function parseLinesResponse(json, expectedLength) {
   } catch {
     return null;
   }
-  if (!Array.isArray(parsed) || parsed.length !== expectedLength) return null;
-  if (!parsed.every((l) => typeof l === 'string')) return null;
-  return parsed;
+  if (!Array.isArray(parsed)) return null;
+
+  const byIndex = new Map();
+  for (const item of parsed) {
+    if (item && Number.isInteger(item.i) && typeof item.r === 'string' && item.r.length > 0) {
+      byIndex.set(item.i, item.r);
+    }
+  }
+  return byIndex.size > 0 ? byIndex : null;
 }
 
 function parseTextResponse(json) {
@@ -51,21 +73,35 @@ function parseTextResponse(json) {
 }
 
 // lines: string[] -> romaji string[], same length/order (so a timed-lyrics
-// line's timeMs alignment survives untouched), or null if nothing usable.
+// line's timeMs alignment survives untouched). Never fully null just because
+// a few lines didn't come back — any line the model didn't return a valid
+// answer for keeps its original (Japanese) text instead, so one dropped
+// line doesn't cost the whole song's conversion. Only actually null if the
+// model returned nothing usable at all.
 async function fetchRomajiLines(lines, apiKey, onAttempt) {
   if (!apiKey || !Array.isArray(lines) || lines.length === 0) return null;
+
+  // Dedupe before sending: repeated lines (choruses) are extremely common in
+  // song lyrics, and sending only unique ones is both cheaper and reduces
+  // (without fully eliminating — see parseLinesResponse) the model's own
+  // tendency to collapse near-identical lines despite being told not to.
+  const uniqueLines = [...new Set(lines)];
+  const indexed = uniqueLines.map((t, i) => ({ i, t }));
 
   const outcome = await tryModels(
     apiKey,
     () => ({
-      contents: [{ parts: [{ text: LINES_PROMPT + JSON.stringify(lines) }] }],
+      contents: [{ parts: [{ text: LINES_PROMPT + JSON.stringify(indexed) }] }],
       generationConfig: { responseMimeType: 'application/json' },
     }),
-    (json) => parseLinesResponse(json, lines.length),
+    (json) => parseLinesResponse(json),
     onAttempt
   );
+  if (!outcome) return null;
 
-  return outcome ? outcome.result : null;
+  const byIndex = outcome.result;
+  const romajiByLine = new Map(uniqueLines.map((line, i) => [line, byIndex.get(i) ?? line]));
+  return lines.map((line) => romajiByLine.get(line));
 }
 
 // text: full static lyrics block -> romaji string, or null.

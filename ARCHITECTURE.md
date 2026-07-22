@@ -242,8 +242,10 @@ conversion), tried in sequence per call rather than pinning to one:
 gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-flash-latest
 ```
 
-`tryModels()` moves to the next candidate on any non-2xx response and only
-throws once every model in the list has failed; an `onAttempt` callback lets
+`tryModels()` moves to the next candidate on any non-2xx response *or* a
+2xx response its caller couldn't actually use (invalid/mismatched shape —
+not just network/HTTP errors) and only throws once every model in the list
+has failed with nothing usable from any of them; an `onAttempt` callback lets
 callers log each candidate tried (`[lyrics] gemini (gemini-3.5-flash-lite):
 hit (103 lines)`), so which model actually served a given call — and why an
 earlier one got skipped — is visible in `overlay.log` instead of being a
@@ -281,12 +283,24 @@ hiragana/katakana/kanji can still follow along and sing. Three pieces:
   reuses `geminiClient.js`'s model-fallback list — this call is pure text
   (no video ingestion), so it's far cheaper against the same daily quota
   than the transcription step.
-- **Computed once, cached forever, shown by swapping at the IPC boundary.**
+- **Timed lines are sent index-tagged, and a partial answer is still used.**
   `main.js`'s `computeRomaji()` converts whichever of `timed`/`static` the
-  song actually has (an array of strings for timed lines — validated to come
-  back the same length so each line's `timeMs` stays correctly paired with
-  its romaji text, or the whole block for static text) and stores the result
-  as a `.romaji` field alongside the original in the same lyrics-cache entry
+  song actually has — for timed lines, each is tagged with its own index
+  (`{i, t}` in, `{i, r}` out) rather than sent as a bare array, specifically
+  because verified directly that models don't reliably preserve "one output
+  per input" for long/repetitive lyrics: a real 151-line song came back
+  missing several lines even when explicitly told not to merge or drop any —
+  first as an outright length mismatch, still intermittently even after
+  deduplicating exact-text repeats first. Rather than treating any dropped
+  line as total failure, `geminiRomaji.js`'s `parseLinesResponse` keeps
+  whatever indices came back validly and `fetchRomajiLines` falls back to
+  each *missing* line's original Japanese text — so one flaky line costs
+  just that line, not the whole song's conversion, and `timeMs` stays
+  correctly paired with its line either way since the array positions never
+  move, only what text sits at them. The static (plain-text) case has no
+  such alignment constraint, so it stays a single free-form block.
+  `computeRomaji()` stores the result as a `.romaji` field alongside the
+  original in the same lyrics-cache entry
   (`lyricsCache.js` needed no changes — `set()` already persists whatever
   extra fields are handed to it). `lyricsForDisplay()` then substitutes
   `timed`/`static` with the romaji versions only in what's sent over IPC when
