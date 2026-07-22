@@ -1019,16 +1019,15 @@ async function handleTrackTick(data) {
       if (videoId) {
         logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...`);
         try {
-          const aiTimed = await fetchGeminiTimedLyrics(videoId, geminiApiKey);
+          const result = await fetchGeminiTimedLyrics(videoId, geminiApiKey, (model, outcome) => {
+            logger.log(`[lyrics] gemini (${model}): ${outcome}`);
+          });
           if (myToken !== fetchToken) return;
-          if (aiTimed) {
-            lyrics = { timed: aiTimed, static: null, source: 'gemini-ai' };
-            logger.log(`[lyrics] gemini: hit (${aiTimed.length} lines)`);
-          } else {
-            logger.log('[lyrics] gemini: no usable transcription returned');
+          if (result) {
+            lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}` };
           }
         } catch (err) {
-          logger.log('[lyrics] gemini: request failed:', err?.message || err);
+          logger.log('[lyrics] gemini: all candidate models failed:', err?.message || err);
         }
       } else {
         logger.log('[lyrics] gemini: no videoId to give it, skipping');

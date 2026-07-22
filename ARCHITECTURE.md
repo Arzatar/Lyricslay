@@ -201,9 +201,9 @@ This has to be BYOK rather than a key embedded in the app:
 
 - **Shared quota exhausts almost immediately.** Google AI Studio's free tier
   is genuinely free (no card required — the actual friction is that it
-  requires creating a Google Cloud *project* first, not billing) but capped
-  per key (1,500 requests/day on the Flash models as of this writing).
-  Shared across every install, that's gone in minutes.
+  requires creating a Google Cloud *project* first, not billing), but per-key
+  daily quotas are small (see below) and vary by model. Shared across every
+  install, that's gone in minutes.
 - **A key embedded in a distributed app isn't secret.** Anyone can extract
   it from the packaged binary, at which point it's not "the app's key"
   anymore, it's a public one.
@@ -218,6 +218,42 @@ lyrics.ovh and Genius (scraped), alongside whatever YT Music/LRCLIB static
 text steps 1–3 already captured, remain the complete fallback chain for
 every user who hasn't set up a key. Nothing about the app's core behavior
 depends on Gemini being configured.
+
+### Why `geminiLyrics.js` tries a *list* of models, not one
+
+Free-tier daily request quotas (RPD) turn out to vary enormously between
+Gemini models on the exact same key/project — verified directly against a
+real account's AI Studio rate-limit dashboard, not from Google's docs (which
+don't publish per-model numbers at all, only "check your dashboard"):
+plain Flash releases (`gemini-2.5-flash`, `gemini-3.5-flash`,
+`gemini-3.6-flash`, and whatever `gemini-flash-latest` aliased to that day)
+were capped at **20 requests/day**, while the newer "Lite" releases
+(`gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`) were given **500/day** on
+that *same* key — 25x more, for equivalent transcription quality on this
+task (confirmed directly: both correctly transcribed a real song with
+per-line timestamps from its YouTube video).
+
+Since there's no API to ask "how much quota do I have left" up front — a
+live HTTP 429 (quota exceeded) or 404 (model not available to this project)
+during an actual call is the only signal Google gives — `MODELS` in
+`geminiLyrics.js` is a hand-ordered list, tried in sequence per lookup, not
+a single pinned model:
+
+```
+gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-2.5-flash → gemini-flash-latest
+```
+
+`fetchGeminiTimedLyrics` moves to the next candidate on any non-2xx response
+and only throws once every model in the list has failed; an `onAttempt`
+callback lets `main.js` log each candidate tried (`[lyrics] gemini
+(gemini-3.5-flash-lite): hit (103 lines)`), so which model actually served a
+given track — and why an earlier one in the list got skipped — is visible
+in `overlay.log` instead of being a black box. This list is a curated guess
+at what's likely to work for a typical free-tier account, not something
+recomputed at runtime, and is expected to need occasional retuning as
+Google reshuffles quotas (exactly what prompted this) or ships new model
+names — `gemini-flash-latest` stays last purely as a catch-all for brand-new
+projects that don't yet have access to any of the named models above it.
 
 ## Lyrics cache (`lyricsCache.js`)
 
