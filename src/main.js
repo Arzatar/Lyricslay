@@ -59,9 +59,12 @@ const DEFAULT_SHORTCUTS = Object.fromEntries(SHORTCUT_DEFS.map((s) => [s.id, s.d
 const store = new Store({
   defaults: {
     bounds: { width: 620, height: 260, x: undefined, y: undefined },
-    // Per-app remembered position/size, keyed by the foreground process name
-    // (e.g. "ffxiv_dx11", "Warframe.x64") — see foregroundApp.js. `bounds`
-    // above stays the fallback for apps with no entry here yet.
+    // Per-app remembered *position only* ({x, y}), keyed by the foreground
+    // process name (e.g. "ffxiv_dx11", "Warframe.x64") — see foregroundApp.js.
+    // Deliberately excludes width/height: size is a global, display-driven
+    // property (font size / visible-lines / current monitor — see
+    // applyDesiredSize), not something each app should remember its own copy
+    // of. `bounds` above stays the fallback for apps with no entry here yet.
     perAppBounds: {},
     fontSize: 22,
     opacity: 0.92,
@@ -223,7 +226,14 @@ function resetPosition(appName) {
     }
   }
   if (appName === currentForegroundApp && win && !win.isDestroyed()) {
-    win.setBounds(topCenterBounds());
+    // Position only, at the window's current size — matching "Move to..."
+    // (position-picker-choose) so this doesn't reset size as a side effect.
+    const current = win.getBounds();
+    const tc = computeAnchoredBounds('top-center', screen.getPrimaryDisplay().workArea, {
+      width: current.width,
+      height: current.height,
+    });
+    win.setPosition(tc.x, tc.y);
   }
   updateTrayMenu();
 }
@@ -343,8 +353,14 @@ function saveBounds() {
   const bounds = win.getBounds();
   store.set('bounds', bounds);
   // Whatever app the overlay was last seen sitting on top of gets this exact
-  // position/size remembered for it — no explicit "save" step; dragging the
-  // overlay while a given game/app is behind it is the save action.
+  // *position* remembered for it — no explicit "save" step; dragging the
+  // overlay while a given game/app is behind it is the save action. Size is
+  // deliberately not included (see the perAppBounds default comment above) —
+  // saving it here too meant every resize (font size, visible lines, moving
+  // to a different monitor) would only "stick" for whichever app happened to
+  // be focused at that moment, leaving every other app's entry with a stale
+  // size that "Move to..." would then anchor against instead of the window's
+  // actual current size.
   //
   // Read-mutate-write the whole map with bracket access (not electron-store's
   // dot-path `set('perAppBounds.x', ...)`) since a process name can itself
@@ -353,20 +369,22 @@ function saveBounds() {
   // instead of one perAppBounds["Warframe.x64"] entry.
   if (currentForegroundApp) {
     const perApp = store.get('perAppBounds');
-    store.set('perAppBounds', { ...perApp, [currentForegroundApp]: bounds });
+    store.set('perAppBounds', { ...perApp, [currentForegroundApp]: { x: bounds.x, y: bounds.y } });
   }
 }
 
 // Called whenever foregroundApp.ps1 reports a different foreground process.
-// Applies that app's remembered position/size if there is one; otherwise
-// leaves the overlay exactly where it already is (first time switching to a
-// given app just means nothing moves until you drag it once).
+// Applies that app's remembered position if there is one; otherwise leaves
+// the overlay exactly where it already is (first time switching to a given
+// app just means nothing moves until you drag it once). Only x/y are ever
+// applied — the window's current size is left untouched, since size is a
+// global property, not a per-app one (see the perAppBounds default comment).
 function applyForegroundApp(processName) {
   if (!processName || processName === OWN_PROCESS_NAME || processName === SHELL_PROCESS_NAME) return;
   currentForegroundApp = processName;
   const saved = store.get('perAppBounds')[processName];
   if (saved && win && !win.isDestroyed()) {
-    win.setBounds(saved);
+    win.setPosition(saved.x, saved.y);
   }
 }
 
