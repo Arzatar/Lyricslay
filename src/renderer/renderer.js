@@ -160,7 +160,10 @@ function tick() {
 }
 requestAnimationFrame(tick);
 
-window.overlay.onNowPlaying((data) => {
+// Named (rather than inline in the IPC listener) so getInitState()'s bootstrap
+// below can apply the same logic to whatever was already playing/found before
+// this page finished loading — see the comment there for why that's needed.
+function applyNowPlaying(data) {
   if (!data || !data.active) {
     root.classList.remove('paused');
     trackLabel.textContent = PLACEHOLDER_LABEL;
@@ -182,16 +185,9 @@ window.overlay.onNowPlaying((data) => {
     updateActiveLine();
     updateStaticScroll();
   }
-});
+}
 
-window.overlay.onLyricsLoading(() => {
-  state.timed = null;
-  state.staticText = null;
-  state.offsetMs = 0;
-  setHint('Searching for lyrics…');
-});
-
-window.overlay.onLyricsResult(({ lyrics, error }) => {
+function applyLyricsResult({ lyrics, error }) {
   if (error || !lyrics || lyrics.source === 'none') {
     state.timed = null;
     state.staticText = null;
@@ -213,7 +209,18 @@ window.overlay.onLyricsResult(({ lyrics, error }) => {
   } else {
     setHint('Lyrics not available for this song.');
   }
+}
+
+window.overlay.onNowPlaying(applyNowPlaying);
+
+window.overlay.onLyricsLoading(() => {
+  state.timed = null;
+  state.staticText = null;
+  state.offsetMs = 0;
+  setHint('Searching for lyrics…');
 });
+
+window.overlay.onLyricsResult(applyLyricsResult);
 
 window.overlay.onFontSizeChanged((size) => {
   document.documentElement.style.setProperty('--font-size', `${size}px`);
@@ -336,4 +343,16 @@ window.overlay.getInitState().then((s) => {
   root.classList.toggle('locked', s.locked);
   state.visibleLines = s.visibleLines;
   syncWindowHeight();
+
+  // Recovers whatever was already playing/found before this page finished
+  // loading — main.js starts watching for now-playing as soon as the app is
+  // ready, without waiting for the renderer, so a track already playing at
+  // launch can have its 'now-playing'/'lyrics-result' events pushed (and
+  // lost, nobody listening yet) before this script has even run. This call
+  // always happens *from* an already-loaded renderer, so it isn't racy the
+  // same way — confirmed directly this was needed: an already-playing song
+  // found via an instant cache hit left the overlay stuck on "waiting for
+  // YouTube Music" until the next real track change.
+  if (s.nowPlaying) applyNowPlaying(s.nowPlaying);
+  if (s.lyrics) applyLyricsResult({ lyrics: s.lyrics });
 });

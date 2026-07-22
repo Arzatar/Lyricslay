@@ -1255,6 +1255,22 @@ function startWatcher() {
   foregroundAppWatcher.start();
 }
 
+// Includes the *current* now-playing/lyrics state (not just static settings)
+// specifically so the renderer can recover it on load regardless of timing —
+// `handleTrackTick` starts firing (from the already-playing track it finds
+// on its very first tick) as soon as `startWatcher()` runs in
+// `app.whenReady()`, which doesn't wait for the renderer's page to finish
+// loading and register its 'now-playing'/'lyrics-result' listeners first.
+// Confirmed directly: a track already playing before launch got detected
+// and its lyrics found (cache hit) a mere ~270ms after "app ready" — easily
+// before a freshly (re)loaded renderer, especially right after an
+// auto-update, has necessarily finished loading — so those pushed IPC
+// events land with nobody listening yet and are simply lost, leaving the
+// overlay stuck on its initial "waiting for YouTube Music" hint until the
+// next real track change. The renderer's own `getInitState()` call, by
+// contrast, always happens *from* the renderer once it's already loaded and
+// ready to receive the response, so pulling the last known state through it
+// is timing-safe in a way pushed events aren't.
 ipcMain.handle('get-init-state', () => ({
   fontSize: store.get('fontSize'),
   opacity: store.get('opacity'),
@@ -1262,6 +1278,8 @@ ipcMain.handle('get-init-state', () => ({
   visibleLines: store.get('visibleLines'),
   lyricsColor: store.get('lyricsColor'),
   colorSwatchVisible: store.get('colorSwatchVisible'),
+  nowPlaying: lastTrackData ?? null,
+  lyrics: currentLyrics ? lyricsForDisplay(currentLyrics) : null,
 }));
 
 // Resizes the window to `heightPx` (the renderer's font/visible-lines-driven

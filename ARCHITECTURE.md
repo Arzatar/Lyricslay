@@ -407,6 +407,38 @@ at kickoff and checks it hasn't moved before applying its result, exactly
 like the main chain — catching both "a different song started" and "the
 same song got explicitly re-searched" as equally stale.
 
+## Recovering state the renderer missed while it was still loading
+
+`app.whenReady()` calls `createWindow()` (which kicks off `win.loadFile()` —
+asynchronous, doesn't wait for the page to actually finish loading) and then
+immediately `startWatcher()`, which starts polling `nowplaying.ps1`. If a
+track is already playing when the app launches (the common case — the app
+isn't usually started at the same moment music starts), the very first
+now-playing tick can report it and trigger a full lyrics lookup within
+under a second of `app.whenReady()` firing. Confirmed directly: a cache-hit
+lookup completed a mere ~270ms after "app ready" was logged — easily faster
+than a freshly (re)loaded renderer page, especially right after an
+auto-update, necessarily finishes loading and runs far enough to register
+its `'now-playing'`/`'lyrics-result'` listeners. `webContents.send()` to a
+page with no listener registered yet doesn't queue the message for later —
+it's just gone, with nothing about a *push*-based approach able to recover
+it. Symptom: the overlay stuck on its initial "waiting for YouTube Music"
+hint indefinitely, even though the correct now-playing/lyrics state was
+already known — right up until the *next* real track change, since nothing
+re-sends stale events.
+
+The fix is to make the renderer *pull* the current state instead of relying
+solely on catching a push in time. `get-init-state` (already invoked by the
+renderer once its own script runs — inherently timing-safe, since that call
+happens *from* the loaded renderer rather than being raced against it) now
+also returns `nowPlaying`/`lyrics` alongside the static settings it already
+carried, sourced from the same `lastTrackData`/`currentLyrics` module state
+`handleTrackTick` already keeps up to date for other purposes (e.g. `Re-search
+lyrics for this song`). `renderer.js`'s `onNowPlaying`/`onLyricsResult` IPC
+handlers were pulled out into named functions (`applyNowPlaying`/
+`applyLyricsResult`) specifically so `getInitState()`'s bootstrap can apply
+the exact same logic to this recovered state, rather than duplicating it.
+
 ## Lyrics cache (`lyricsCache.js`)
 
 Every lyrics lookup — successful or not — is written to
