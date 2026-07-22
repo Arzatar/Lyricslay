@@ -620,7 +620,16 @@ function updateTrayMenu() {
     {
       label: 'Re-search lyrics for this song',
       enabled: !!lastTrackData?.title,
-      click: retryLyrics,
+      submenu: [
+        { label: 'Automatic (all sources)', click: () => retryLyrics('auto') },
+        { label: 'YouTube Music', click: () => retryLyrics('youtube') },
+        { label: 'LRCLIB (free API)', click: () => retryLyrics('api') },
+        {
+          label: 'Gemini AI only',
+          enabled: !!getGeminiApiKey(),
+          click: () => retryLyrics('gemini'),
+        },
+      ],
     },
     { type: 'separator' },
     {
@@ -722,12 +731,14 @@ function resetOffset() {
 // busts it and re-runs the lookup immediately, same as the cache-bust already
 // done automatically on sign-in, but user-triggered and for whichever source
 // currently has bad data instead of only the "should now use auth" case.
-function retryLyrics() {
+// `mode` picks which source(s) to restrict the re-run to — see the comment
+// on handleTrackTick's `mode` parameter for what each one skips/keeps.
+function retryLyrics(mode = 'auto') {
   if (!lastTrackData?.title || !lyricsCache) return;
-  logger.log(`[lyrics] manual re-search requested for "${lastTrackData.title}" — "${lastTrackData.artist}"`);
+  logger.log(`[lyrics] manual re-search requested for "${lastTrackData.title}" — "${lastTrackData.artist}" (mode=${mode})`);
   lyricsCache.delete(lastTrackData.title, lastTrackData.artist);
   currentTrackKey = null;
-  handleTrackTick(lastTrackData);
+  handleTrackTick(lastTrackData, mode);
 }
 
 // Registers every configured shortcut fresh (see SHORTCUT_DEFS/SHORTCUT_HANDLERS
@@ -964,7 +975,20 @@ function toggleShowRomaji() {
   }
 }
 
-async function handleTrackTick(data) {
+// mode picks which primary source(s) "Re-search lyrics for this song" starts
+// from, each keeping its own natural downstream fallback tail:
+//   'auto'    - the full default chain, unchanged (YT auth -> LRCLIB -> YT
+//               unauth -> Gemini -> static).
+//   'youtube' - YT Music only (auth then unauth), skipping LRCLIB entirely,
+//               then falling through to Gemini -> static same as auto.
+//   'api'     - LRCLIB only, skipping YouTube entirely, then Gemini -> static.
+//   'gemini'  - Gemini only. No fallback after it at all, static included -
+//               it's already the last real attempt in the normal chain, so
+//               picking it explicitly means "just the AI, nothing else."
+// Regular automatic ticks from the now-playing watcher never pass a mode,
+// so they always get 'auto' — this only ever differs for a manual re-search
+// (see retryLyrics()).
+async function handleTrackTick(data, mode = 'auto') {
   // Third-party YouTube re-uploads (common for niche/harder-to-keep-online artists)
   // often report a useless (title, artist) pair for lyrics purposes — the artist
   // field is frequently just the uploader's channel name. Cleaning it here, once,
@@ -1030,7 +1054,7 @@ async function handleTrackTick(data) {
     let staticFallback = null; // { static, source } — last resort only
 
     // Step 1: YT Music, authenticated — timed only.
-    if (ytmAuth) {
+    if ((mode === 'auto' || mode === 'youtube') && ytmAuth) {
       let authHeaders = null;
       try {
         const accessToken = await ytmAuthModule.getValidAccessToken(ytmAuth);
@@ -1066,7 +1090,7 @@ async function handleTrackTick(data) {
     }
 
     // Step 2: LRCLIB — timed only.
-    if (!lyrics) {
+    if (!lyrics && (mode === 'auto' || mode === 'api')) {
       const synced = await fetchSyncedLyrics(data.title, data.artist, durationSec);
       if (myToken !== fetchToken) return;
       if (synced?.timed) {
@@ -1085,7 +1109,7 @@ async function handleTrackTick(data) {
     // authenticated requests (see ARCHITECTURE.md), so this realistically
     // never hits — kept anyway since it's cheap (reuses step 1's result
     // when we have one) and costs nothing to check.
-    if (!lyrics) {
+    if (!lyrics && (mode === 'auto' || mode === 'youtube')) {
       const fallback = ytmResult ?? (await fetchLyricsForTrack(data.title, data.artist));
       if (myToken !== fetchToken) return;
       ytmResult = ytmResult ?? fallback; // keep the videoId around for the AI step below
@@ -1141,8 +1165,11 @@ async function handleTrackTick(data) {
 
     // Nothing timed anywhere, including AI — try the remaining plain-text-only
     // sources (if step 1-3 didn't already leave us a staticFallback) before
-    // finally giving up, same as the old chain's tail end.
-    if (!lyrics && !staticFallback) {
+    // finally giving up, same as the old chain's tail end. Skipped entirely
+    // in 'gemini' mode — picking Gemini explicitly means only the AI, no
+    // static fallback of any kind, since it's already the last real attempt
+    // in the normal chain.
+    if (!lyrics && !staticFallback && mode !== 'gemini') {
       try {
         const ovh = await lyricsOvh.fetchLyrics(data.title, data.artist);
         if (myToken !== fetchToken) return;
@@ -1157,7 +1184,7 @@ async function handleTrackTick(data) {
       }
     }
 
-    if (!lyrics && !staticFallback) {
+    if (!lyrics && !staticFallback && mode !== 'gemini') {
       try {
         const scraped = await genius.fetchLyrics(data.title, data.artist);
         if (myToken !== fetchToken) return;

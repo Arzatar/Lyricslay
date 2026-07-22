@@ -146,11 +146,23 @@ bright pick.
 (in that song's [lyrics cache](#lyrics-cache) entry), so it's remembered next
 time that song plays. Tray menu → *Reset sync* zeroes it again.
 
-**Wrong or broken lyrics:** tray menu → *Re-search lyrics for this song*
-clears that song's [cached](#lyrics-cache) entry and immediately re-runs the
-lookup from scratch. Useful when a source matched the wrong song, or returned
-something garbled/truncated — the cache never expires on its own, so without
-this a plain replay of the song would just hit that same bad entry again.
+**Wrong or broken lyrics:** tray menu → *Re-search lyrics for this song* is a
+submenu with four options, all of which clear that song's
+[cached](#lyrics-cache) entry and immediately re-run the lookup — useful when
+a source matched the wrong song, or returned something garbled/truncated,
+since the cache never expires on its own and a plain replay would just hit
+that same bad entry again:
+- **Automatic (all sources)** — the normal full chain (see *Features* above),
+  unchanged.
+- **YouTube Music** — YT Music only (authenticated, then unauthenticated),
+  skipping LRCLIB, then falling through to the AI fallback and the
+  plain-text sources same as automatic.
+- **LRCLIB (free API)** — LRCLIB only, skipping YouTube, same fallthrough
+  after.
+- **Gemini AI only** — just the AI transcription, nothing before or after it
+  (no static fallback either) — grayed out if no key is configured. Since
+  it's already the last real attempt in the automatic chain, picking it
+  explicitly means "just the AI, or nothing."
 
 **Start with Windows:** tray menu → *Enable start with Windows* launches the
 app automatically at login; the same item switches to *Disable* once it's on.

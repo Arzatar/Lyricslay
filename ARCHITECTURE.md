@@ -325,6 +325,35 @@ hiragana/katakana/kanji can still follow along and sing. Three pieces:
   immediately in their original text first, same progressive-enhancement feel
   as the AI transcription fallback itself.
 
+## Restricting a re-search to specific sources (`handleTrackTick`'s `mode`)
+
+Tray menu → *Re-search lyrics for this song* is a submenu (Automatic /
+YouTube Music / LRCLIB / Gemini AI only) rather than a single action —
+`handleTrackTick(data, mode)` takes an optional `mode` (`'auto'` by default,
+which is what every regular tick from the now-playing watcher implicitly
+uses) that gates which of steps 1–3 above run at all, not just which one's
+result wins:
+
+- `'youtube'` restricts to step 1 + step 3 (YT Music, authenticated then
+  not), skipping step 2 (LRCLIB) entirely, then still falls through to
+  Gemini and the static sources same as automatic.
+- `'api'` restricts to step 2 (LRCLIB) only, skipping YouTube entirely, same
+  fallthrough after.
+- `'gemini'` skips straight to step 5, and — unlike the other two — skips
+  the static-only tail (lyrics.ovh/Genius) too. Picking Gemini explicitly is
+  meant as "just the AI, or nothing," not "AI, then fall back to scraping if
+  even that fails."
+
+Each mode still shares the same `staticFallback`-capture mechanism as
+automatic (see above) among whichever steps actually run — e.g. `'youtube'`
+mode still remembers YT Music's plain-text result as a last resort if
+neither of its two YT Music attempts finds timed lyrics and Gemini also
+comes up empty. `retryLyrics(mode)` (what the submenu items actually call)
+deletes the cached entry first, exactly like the original single-action
+version did, so each mode always starts from a real, fresh lookup rather
+than reusing whatever's cached from a previous automatic (or differently
+-restricted) run.
+
 ## Guarding against a stale lyrics fetch winning a race (`fetchToken`)
 
 `handleTrackTick` fires on every SMTC tick, but a lyrics lookup can take
