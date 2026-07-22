@@ -1118,11 +1118,17 @@ async function handleTrackTick(data) {
       if (videoId) {
         logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...`);
         try {
-          const result = await fetchGeminiTimedLyrics(videoId, geminiApiKey, (model, outcome) => {
-            logger.log(`[lyrics] gemini (${model}): ${outcome}`);
-          });
+          const result = await fetchGeminiTimedLyrics(
+            videoId,
+            geminiApiKey,
+            (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
+            data.durationMs
+          );
           if (myToken !== fetchToken) return;
           if (result) {
+            if (result.correctedUnits) {
+              logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
+            }
             lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}` };
           }
         } catch (err) {

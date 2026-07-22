@@ -166,7 +166,15 @@ attempt has failed does the search settle for that remembered static result.
    to answer questions about a YouTube video's content) and asks it to
    transcribe the song with a `{timeMs, text}` per line, matching the shape
    every other timed source already produces. No audio capture or download
-   happens on our end — Gemini fetches and watches the video itself.
+   happens on our end — Gemini fetches and watches the video itself. The
+   prompt asks explicitly for milliseconds (with a worked example), but
+   verified directly that a model can still answer in seconds regardless —
+   a real 238-second song came back with every line under 220 "ms",
+   compressing the whole transcription into a quarter-second. Rather than
+   trust the model on the unit, `correctSecondsMistakenForMs()` sanity-checks
+   the result against the song's already-known real duration and multiplies
+   by 1000 if the ratio between them comes out suspiciously close to exactly
+   that — see the comment above it in `geminiLyrics.js` for the exact heuristic.
 6. **Static-only fallback** — reached only if every timed attempt above
    failed *and* no `staticFallback` was captured along the way (i.e. no
    Gemini key configured, or Gemini also failed/found nothing). At this

@@ -16,7 +16,7 @@ transcribe its lyrics.
 
 Return ONLY a JSON array (no markdown, no commentary) of objects, one per sung
 line, in chronological order:
-[{"timeMs": <integer ms from the start of the video where this line begins>, "text": "<the line, no annotations like [Chorus]>"}, ...]
+[{"timeMs": <integer MILLISECONDS from the start of the video where this line begins — NOT seconds, e.g. a line starting at 1 minute 5 seconds into the song is timeMs: 65000, not 65>, "text": "<the line, no annotations like [Chorus]>"}, ...]
 
 If the track is instrumental or has no discernible vocals, return [].`;
 
@@ -43,9 +43,33 @@ function parseTimedLyrics(json) {
   return timed.length > 0 ? timed : null;
 }
 
-// Returns { timed, model } from whichever model worked first, or null if the
-// video has no usable lyrics. Throws only once every candidate model has failed.
-async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt) {
+// The prompt asks for milliseconds explicitly (with an example), but
+// verified directly that a model can still answer in seconds anyway — a
+// real 238-second song came back with every line under 220 "ms", i.e. the
+// whole transcription compressed into under a quarter-second of actual
+// playback. Rather than trust the model to get the unit right, sanity-check
+// it against the song's *known* duration (already available from SMTC) and
+// correct it deterministically: if the last line's timestamp is way too
+// small to be milliseconds but lands close to right as *seconds* (the
+// durationMs/maxTimeMs ratio comes out close to 1000), multiply everything
+// by 1000. A well-formed ms-based track's last line should already land
+// somewhere near the real duration, so that ratio is normally close to 1.
+function correctSecondsMistakenForMs(timed, durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs <= 0 || timed.length === 0) return timed;
+  const maxTimeMs = timed[timed.length - 1].timeMs;
+  if (maxTimeMs <= 0) return timed;
+  const ratio = durationMs / maxTimeMs;
+  if (ratio < 500 || ratio > 2000) return timed;
+  return timed.map((l) => ({ ...l, timeMs: l.timeMs * 1000 }));
+}
+
+// Returns { timed, model, correctedUnits } from whichever model worked
+// first, or null if the video has no usable lyrics. `durationMs` (the
+// song's real, known duration) is optional but strongly recommended — it's
+// what makes the seconds-vs-milliseconds correction above possible; without
+// it, a mis-unit response is returned as-is. Throws only once every
+// candidate model has failed.
+async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs) {
   if (!apiKey || !videoId) return null;
 
   const outcome = await tryModels(
@@ -64,8 +88,10 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt) {
     (json) => parseTimedLyrics(json),
     onAttempt
   );
+  if (!outcome) return null;
 
-  return outcome ? { timed: outcome.result, model: outcome.model } : null;
+  const corrected = correctSecondsMistakenForMs(outcome.result, durationMs);
+  return { timed: corrected, model: outcome.model, correctedUnits: corrected !== outcome.result };
 }
 
-module.exports = { fetchGeminiTimedLyrics };
+module.exports = { fetchGeminiTimedLyrics, correctSecondsMistakenForMs, parseTimedLyrics };
