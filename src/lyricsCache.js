@@ -28,10 +28,17 @@ function sanitizeFilename(name) {
 // non a-z0-9 character for fuzzy search scoring, which collapses any title
 // written entirely in a non-Latin script (Japanese, Korean, Cyrillic, ...) down
 // to an empty string. Reusing it here made every such title from the same
-// artist share one cache file. This only folds case/width variants and
-// whitespace, keeping the actual script characters that make titles distinct.
+// artist share one cache file. This folds case/width variants, whitespace, and
+// Latin diacritics (so "Télé" and "Tele" share a cache entry), but — unlike
+// normalizeText — never strips a character just for being outside a-z0-9, so
+// non-Latin scripts stay intact and distinct instead of collapsing to "".
 function normalizeForKey(str) {
-  return (str || '').normalize('NFKC').toLowerCase().trim().replace(/\s+/g, ' ');
+  return (str || '')
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '') // strip combining diacritics after NFKD split
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
 }
 
 function cacheFileNameFor(title, artist) {

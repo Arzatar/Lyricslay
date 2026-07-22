@@ -284,6 +284,10 @@ src/
   lyricsCache.js          Per-song, on-disk lyrics cache (title+artist keyed, no
                           expiry) — also stores each song's manual sync offset
   auth.js                Google OAuth device-flow login + encrypted token storage
+  updater.js              Thin wrapper around electron-updater: tracks update status
+                          (checking/downloading/downloaded/error) and notifies main.js
+                          for the tray's "Check for updates" item — see *Releasing an
+                          update* below
   logger.js               Persistent file logger (%APPDATA%\lyricslay\overlay.log)
                           — the app has no console window, so this is how errors
                           and diagnostics are ever visible after the fact

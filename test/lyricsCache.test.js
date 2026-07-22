@@ -37,6 +37,15 @@ test('cacheFileNameFor is case/accent-insensitive (matches by name, not exact te
   assert.equal(a, c);
 });
 
+test('cacheFileNameFor keeps non-Latin-script titles distinct (regression: YOASOBI collision)', () => {
+  // Before the NFKD/diacritic fix, an all-Japanese title stripped down to "",
+  // so every song by the same artist collapsed onto one cache file.
+  const idol = cacheFileNameFor('アイドル', 'YOASOBI');
+  const kaibutsu = cacheFileNameFor('怪物', 'YOASOBI');
+  assert.notEqual(idol, kaibutsu);
+  assert.notEqual(idol, ' - yoasobi.json');
+});
+
 test('cacheFileNameFor produces a readable "title - artist.json" name', () => {
   assert.equal(cacheFileNameFor('Song', 'Artist'), 'song - artist.json');
 });
