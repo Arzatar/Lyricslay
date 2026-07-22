@@ -82,6 +82,16 @@ pieces make that work, both in `main.js`:
   (`path.basename(process.execPath, '.exe')` — "Lyricslay" packaged,
   "electron" in dev) and ignores it, keeping `currentForegroundApp` as
   whatever real app was last seen instead.
+- **Not tracking Windows Explorer either.** Explorer owns the taskbar, the
+  tray's notification area, and the desktop — clicking the tray icon (how
+  our own menu opens in the first place) or the taskbar briefly reports
+  `"explorer"` as the foreground window, same as any real app switch would.
+  Confirmed directly this broke *Move to…* and *Reset position*: clicking
+  the tray icon got misattributed as "switched to Explorer," so those
+  features ended up operating on an `"explorer"` entry instead of whatever
+  app was actually behind the overlay a moment before. `applyForegroundApp()`
+  excludes `SHELL_PROCESS_NAME` (`'explorer'`) the same way it excludes
+  `OWN_PROCESS_NAME`.
 
 `perAppBounds` (in the electron-store config, alongside the flat `bounds`
 fallback used for apps with no entry yet) is read/rewritten as a whole object

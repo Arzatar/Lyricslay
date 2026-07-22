@@ -324,10 +324,12 @@ npm test
 
 Runs the unit test suite (Node's built-in `node:test` runner, no extra
 dependencies). Tests cover the pure logic — LRC parsing, title/artist
-matching, active-line/scroll calculation, YT Music/lyrics.ovh/Genius response
-parsing, the lyrics cache (including sync-offset adjustment), and keydown →
-accelerator conversion for the shortcuts recorder — using hand-built fixtures
-rather than live network calls, so they run offline and deterministically.
+matching, active-line/scroll calculation, YT Music/lyrics.ovh/Genius/Gemini
+response parsing (including the seconds-vs-milliseconds timestamp
+correction), Japanese-script detection, the lyrics cache (including
+sync-offset adjustment), and keydown → accelerator conversion for the
+shortcuts recorder — using hand-built fixtures rather than live network
+calls, so they run offline and deterministically.
 
 Electron's main-process wiring (window/tray/IPC) and the PowerShell now-playing
 bridge are not unit tested; they're thin glue verified by manually running the
