@@ -413,6 +413,10 @@ $env:GH_TOKEN = "<token>"
 npm run dist:publish
 ```
 
-**No code signing:** installers are unsigned, so SmartScreen shows the same
-"unknown publisher" warning on install as the portable copy does. Auto-update
-itself isn't affected — it doesn't depend on the installer being signed.
+**No code signing (yet):** installers are unsigned, so SmartScreen shows the
+same "unknown publisher" warning on install as the portable copy does.
+Auto-update itself isn't affected — it doesn't depend on the installer being
+signed. Lyricslay has applied for free code signing via the SignPath
+Foundation open source program — see [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)
+for status and details, and [PRIVACY.md](PRIVACY.md) for what data (if any)
+leaves your machine.
