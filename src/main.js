@@ -952,9 +952,19 @@ function maybeBackfillRomaji(title, artist, lyrics) {
   const geminiApiKey = getGeminiApiKey();
   if (!geminiApiKey) return;
 
+  // Guards against the same fetchToken race as the main lyrics chain (see
+  // the dedicated section in ARCHITECTURE.md) — but comparing `key !==
+  // currentTrackKey` alone isn't enough here specifically: re-searching the
+  // *same* song that's already playing doesn't change `key`, only bumps
+  // `fetchToken`. Confirmed directly: re-searching a Japanese song while its
+  // *previous* automatic romaji conversion was still in flight let both
+  // finish and race to overwrite each other's result. Capturing fetchToken
+  // at kickoff and checking it (not just the track key) on the other side
+  // catches that case too.
   const key = trackKeyFor(title, artist);
+  const myFetchToken = fetchToken;
   computeRomaji(title, artist, lyrics, geminiApiKey).then((updated) => {
-    if (!updated || key !== currentTrackKey) return;
+    if (!updated || key !== currentTrackKey || myFetchToken !== fetchToken) return;
     lyricsCache?.set(title, artist, updated);
     currentLyrics = lyricsCache?.get(title, artist) ?? updated;
     win?.webContents.send('lyrics-result', { title, artist, lyrics: lyricsForDisplay(currentLyrics) });

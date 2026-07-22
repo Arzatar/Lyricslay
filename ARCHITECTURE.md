@@ -384,6 +384,19 @@ this: any fetch older than the *current* track change is guaranteed stale
 and gets discarded, regardless of which path (cache hit or fresh fetch) the
 current track change resolves through.
 
+`maybeBackfillRomaji()`'s background romaji conversion (see above) needs
+this same guard, but comparing `key !== currentTrackKey` alone — the check
+it's *also* using, to skip applying a result once the display has moved on
+to a different song — isn't sufficient on its own: re-searching the *same*
+Japanese song that's already playing (`retryLyrics()`, e.g. after a bad
+transcription) doesn't change `key` at all, only bumps `fetchToken`.
+Confirmed directly: re-searching a song while its previous automatic romaji
+conversion was still in flight let both finish and race to overwrite each
+other's cached result. `maybeBackfillRomaji()` now also captures `fetchToken`
+at kickoff and checks it hasn't moved before applying its result, exactly
+like the main chain — catching both "a different song started" and "the
+same song got explicitly re-searched" as equally stale.
+
 ## Lyrics cache (`lyricsCache.js`)
 
 Every lyrics lookup — successful or not — is written to
