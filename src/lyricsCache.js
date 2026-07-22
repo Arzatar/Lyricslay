@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { normalizeText } = require('./textMatch');
 
 // Persists lyrics lookups to disk, one JSON file per song, so the same song never
 // needs a fresh API lookup twice. Keyed by normalized title+artist rather than
@@ -25,8 +24,18 @@ function sanitizeFilename(name) {
   return cleaned.slice(0, MAX_FILENAME_LENGTH) || 'untitled';
 }
 
+// Deliberately distinct from textMatch's normalizeText: that one strips every
+// non a-z0-9 character for fuzzy search scoring, which collapses any title
+// written entirely in a non-Latin script (Japanese, Korean, Cyrillic, ...) down
+// to an empty string. Reusing it here made every such title from the same
+// artist share one cache file. This only folds case/width variants and
+// whitespace, keeping the actual script characters that make titles distinct.
+function normalizeForKey(str) {
+  return (str || '').normalize('NFKC').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
 function cacheFileNameFor(title, artist) {
-  const key = `${normalizeText(title)} - ${normalizeText(artist)}`;
+  const key = `${normalizeForKey(title)} - ${normalizeForKey(artist)}`;
   return `${sanitizeFilename(key)}.json`;
 }
 
