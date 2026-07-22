@@ -15,6 +15,8 @@ const genius = require('./genius');
 // GEMINI_API_KEY env var can override it too, purely as a local-dev
 // convenience for testing without touching the encrypted store.
 const { fetchGeminiTimedLyrics } = require('./geminiLyrics');
+const { fetchRomajiLines, fetchRomajiText } = require('./geminiRomaji');
+const { lyricsAreJapanese } = require('./langDetect');
 const geminiKeyStore = require('./geminiKeyStore');
 function getGeminiApiKey() {
   return process.env.GEMINI_API_KEY || geminiKeyStore.loadGeminiKey();
@@ -68,6 +70,7 @@ const store = new Store({
     visibleLines: 3,
     lyricsColor: '#ffffff',
     colorSwatchVisible: false,
+    showRomaji: false,
     shortcuts: DEFAULT_SHORTCUTS,
   },
 });
@@ -589,6 +592,13 @@ function updateTrayMenu() {
           label: geminiKeyStore.loadGeminiKey() ? 'AI lyrics fallback: key set' : 'Set up AI lyrics fallback…',
           click: openGeminiKeySettings,
         },
+        {
+          // Only ever does anything for songs actually detected as Japanese
+          // (see langDetect.js) — flipping this on for an English song is a
+          // harmless no-op, nothing gets sent to Gemini for it.
+          label: store.get('showRomaji') ? 'Show original (hide romaji)' : 'Show romaji for Japanese lyrics',
+          click: toggleShowRomaji,
+        },
       ],
     },
     {
@@ -874,6 +884,86 @@ function openPositionPicker() {
   });
 }
 
+// If "Show romaji" is on and this song's lyrics have a `.romaji` version
+// cached, swaps it in for display — otherwise returns `lyrics` unchanged.
+// Only ever touches what's sent over IPC; the cache file always keeps the
+// original text too, so turning the setting back off instantly reverts.
+function lyricsForDisplay(lyrics) {
+  if (!lyrics || !store.get('showRomaji') || !lyrics.romaji) return lyrics;
+  return {
+    ...lyrics,
+    timed: lyrics.romaji.timed ?? lyrics.timed,
+    static: lyrics.romaji.static ?? lyrics.static,
+  };
+}
+
+// Converts whichever of timed/static this song actually has into romaji via
+// Gemini, returning a new lyrics object with a `.romaji` field, or null if
+// nothing usable came back (quota exhausted on every candidate model,
+// network error, etc.) — a failure here just means the toggle has nothing
+// to show yet, never a crash or a lost original lyric.
+async function computeRomaji(title, artist, lyrics, apiKey) {
+  const onAttempt = (model, outcome) => logger.log(`[romaji] (${model}): ${outcome}`);
+  try {
+    if (Array.isArray(lyrics.timed) && lyrics.timed.length > 0) {
+      logger.log(`[romaji] converting ${lyrics.timed.length} timed lines for "${title}" — "${artist}"...`);
+      const romajiLines = await fetchRomajiLines(lyrics.timed.map((l) => l.text), apiKey, onAttempt);
+      if (!romajiLines) return null;
+      const romajiTimed = lyrics.timed.map((l, i) => ({ timeMs: l.timeMs, text: romajiLines[i] }));
+      logger.log(`[romaji] hit (${romajiTimed.length} lines)`);
+      return { ...lyrics, romaji: { timed: romajiTimed, static: null } };
+    }
+    if (typeof lyrics.static === 'string' && lyrics.static.trim()) {
+      logger.log(`[romaji] converting static text for "${title}" — "${artist}"...`);
+      const romajiText = await fetchRomajiText(lyrics.static, apiKey, onAttempt);
+      if (!romajiText) return null;
+      logger.log('[romaji] hit');
+      return { ...lyrics, romaji: { timed: null, static: romajiText } };
+    }
+    return null;
+  } catch (err) {
+    logger.log('[romaji] all candidate models failed:', err?.message || err);
+    return null;
+  }
+}
+
+// Fire-and-forget: kicks off romaji conversion in the background (if the
+// setting's on, a key's configured, the song is actually Japanese, and it
+// isn't already computed) without making the caller wait for it — lyrics
+// always show immediately in their original text first, then get swapped
+// to romaji a moment later once the conversion lands, same "progressive"
+// feel as the AI transcription fallback itself. Guards against a track
+// change happening mid-request by checking `currentTrackKey` before acting
+// on the result, the same race this file already handles via `fetchToken`
+// inside handleTrackTick.
+function maybeBackfillRomaji(title, artist, lyrics) {
+  if (!store.get('showRomaji') || !lyrics || lyrics.romaji || !lyricsAreJapanese(lyrics)) return;
+  const geminiApiKey = getGeminiApiKey();
+  if (!geminiApiKey) return;
+
+  const key = trackKeyFor(title, artist);
+  computeRomaji(title, artist, lyrics, geminiApiKey).then((updated) => {
+    if (!updated || key !== currentTrackKey) return;
+    lyricsCache?.set(title, artist, updated);
+    currentLyrics = lyricsCache?.get(title, artist) ?? updated;
+    win?.webContents.send('lyrics-result', { title, artist, lyrics: lyricsForDisplay(currentLyrics) });
+  });
+}
+
+function toggleShowRomaji() {
+  const next = !store.get('showRomaji');
+  store.set('showRomaji', next);
+  updateTrayMenu();
+  if (lastTrackData && currentLyrics) {
+    win?.webContents.send('lyrics-result', {
+      title: lastTrackData.title,
+      artist: lastTrackData.artist,
+      lyrics: lyricsForDisplay(currentLyrics),
+    });
+    if (next) maybeBackfillRomaji(lastTrackData.title, lastTrackData.artist, currentLyrics);
+  }
+}
+
 async function handleTrackTick(data) {
   // Third-party YouTube re-uploads (common for niche/harder-to-keep-online artists)
   // often report a useless (title, artist) pair for lyrics purposes — the artist
@@ -906,7 +996,8 @@ async function handleTrackTick(data) {
   if (cached) {
     logger.log(`[lyrics] cache hit, source=${cached.source} ${cached.timed ? '(timed)' : cached.static ? '(static)' : '(none)'}`);
     currentLyrics = cached;
-    win?.webContents.send('lyrics-result', { title: data.title, artist: data.artist, lyrics: cached });
+    win?.webContents.send('lyrics-result', { title: data.title, artist: data.artist, lyrics: lyricsForDisplay(cached) });
+    maybeBackfillRomaji(data.title, data.artist, cached);
     return;
   }
 
@@ -1085,8 +1176,9 @@ async function handleTrackTick(data) {
     win?.webContents.send('lyrics-result', {
       title: data.title,
       artist: data.artist,
-      lyrics: currentLyrics,
+      lyrics: lyricsForDisplay(currentLyrics),
     });
+    maybeBackfillRomaji(data.title, data.artist, currentLyrics);
   } catch (err) {
     if (myToken !== fetchToken) return;
     logger.log('[lyrics] lookup threw:', err?.stack || err?.message || err);

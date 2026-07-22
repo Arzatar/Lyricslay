@@ -219,41 +219,89 @@ text steps 1–3 already captured, remain the complete fallback chain for
 every user who hasn't set up a key. Nothing about the app's core behavior
 depends on Gemini being configured.
 
-### Why `geminiLyrics.js` tries a *list* of models, not one
+### Why every Gemini call tries a *list* of models, not one (`geminiClient.js`)
 
 Free-tier daily request quotas (RPD) turn out to vary enormously between
 Gemini models on the exact same key/project — verified directly against a
 real account's AI Studio rate-limit dashboard, not from Google's docs (which
-don't publish per-model numbers at all, only "check your dashboard"):
-plain Flash releases (`gemini-2.5-flash`, `gemini-3.5-flash`,
-`gemini-3.6-flash`, and whatever `gemini-flash-latest` aliased to that day)
-were capped at **20 requests/day**, while the newer "Lite" releases
-(`gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`) were given **500/day** on
-that *same* key — 25x more, for equivalent transcription quality on this
-task (confirmed directly: both correctly transcribed a real song with
-per-line timestamps from its YouTube video).
+don't publish per-model numbers at all, only "check your dashboard"): plain
+Flash releases were capped at **20 requests/day**, while the newer "Lite"
+releases (`gemini-3.1-flash-lite`, `gemini-3.5-flash-lite`) were given
+**500/day** on that *same* key — 25x more, for equivalent quality on this
+task (confirmed directly, both for lyrics transcription and for romaji
+conversion below).
 
 Since there's no API to ask "how much quota do I have left" up front — a
-live HTTP 429 (quota exceeded) or 404 (model not available to this project)
-during an actual call is the only signal Google gives — `MODELS` in
-`geminiLyrics.js` is a hand-ordered list, tried in sequence per lookup, not
-a single pinned model:
+live HTTP 429 (quota exceeded) or 404 (model retired, or not available to
+this project) during an actual call is the only signal Google gives —
+`MODELS` in `geminiClient.js` is a hand-ordered list, shared by every Gemini
+feature (`geminiLyrics.js`'s transcription and `geminiRomaji.js`'s romaji
+conversion), tried in sequence per call rather than pinning to one:
 
 ```
-gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-2.5-flash → gemini-flash-latest
+gemini-3.5-flash-lite → gemini-3.1-flash-lite → gemini-flash-latest
 ```
 
-`fetchGeminiTimedLyrics` moves to the next candidate on any non-2xx response
-and only throws once every model in the list has failed; an `onAttempt`
-callback lets `main.js` log each candidate tried (`[lyrics] gemini
-(gemini-3.5-flash-lite): hit (103 lines)`), so which model actually served a
-given track — and why an earlier one in the list got skipped — is visible
-in `overlay.log` instead of being a black box. This list is a curated guess
-at what's likely to work for a typical free-tier account, not something
-recomputed at runtime, and is expected to need occasional retuning as
-Google reshuffles quotas (exactly what prompted this) or ships new model
-names — `gemini-flash-latest` stays last purely as a catch-all for brand-new
-projects that don't yet have access to any of the named models above it.
+`tryModels()` moves to the next candidate on any non-2xx response and only
+throws once every model in the list has failed; an `onAttempt` callback lets
+callers log each candidate tried (`[lyrics] gemini (gemini-3.5-flash-lite):
+hit (103 lines)`), so which model actually served a given call — and why an
+earlier one got skipped — is visible in `overlay.log` instead of being a
+black box. This list is a curated guess at what's likely to work for a
+typical free-tier account, not something recomputed at runtime, and needs
+occasional retuning as Google reshuffles quotas or retires models entirely —
+`gemini-2.5-flash` and `gemini-2.5-flash-lite` were both tried here at
+different points and **both now 404** ("no longer available to new users"),
+which is why the list above has no non-Lite, non-"latest" tier left: an
+older "stable" named model isn't actually safer than a newer one, Google
+just removes access outright rather than only tightening quota.
+`gemini-flash-latest` stays last purely as a catch-all for brand-new
+projects that don't yet have access to any of the named models above it —
+and as a hedge against the two Lite models above it eventually meeting the
+same fate.
+
+### Romaji for Japanese lyrics (`geminiRomaji.js`, `langDetect.js`)
+
+Tray menu → *Settings* → *Show romaji for Japanese lyrics* converts whatever
+lyrics were found (from any source — LRCLIB, YT Music, Gemini transcription,
+even the plain-text fallbacks) into romaji, so someone who can't read
+hiragana/katakana/kanji can still follow along and sing. Three pieces:
+
+- **Detection is local and free** — `langDetect.js`'s `lyricsAreJapanese()`
+  just checks for hiragana/katakana code points (not kanji alone, which is
+  ambiguous with Chinese) via regex. No network call, so every song's lyrics
+  get checked for free, and the AI conversion step only ever runs for songs
+  that are actually Japanese.
+- **Conversion is AI, not a local dictionary, on purpose.** The obvious
+  offline alternative — `kuroshiro` + `kuromoji`, a Japanese morphological
+  analyzer — ships a ~40MB dictionary just for this one feature, and
+  dictionary lookups routinely get kanji readings wrong for song lyrics
+  specifically, where artists commonly use stylized/non-standard furigana
+  for artistic effect that no fixed dictionary can know about. `geminiRomaji.js`
+  reuses `geminiClient.js`'s model-fallback list — this call is pure text
+  (no video ingestion), so it's far cheaper against the same daily quota
+  than the transcription step.
+- **Computed once, cached forever, shown by swapping at the IPC boundary.**
+  `main.js`'s `computeRomaji()` converts whichever of `timed`/`static` the
+  song actually has (an array of strings for timed lines — validated to come
+  back the same length so each line's `timeMs` stays correctly paired with
+  its romaji text, or the whole block for static text) and stores the result
+  as a `.romaji` field alongside the original in the same lyrics-cache entry
+  (`lyricsCache.js` needed no changes — `set()` already persists whatever
+  extra fields are handed to it). `lyricsForDisplay()` then substitutes
+  `timed`/`static` with the romaji versions only in what's sent over IPC when
+  the setting is on — the cache file and `renderer.js` never need to know
+  the feature exists, since the renderer already just displays whatever
+  `timed`/`static` it's given. Turning the setting back off is instant
+  (nothing to refetch, just stops substituting), and conversion only ever
+  happens once per song even across toggling on/off multiple times.
+- **Never blocks the initial lyrics display.** `maybeBackfillRomaji()` fires
+  the conversion in the background (checked on every fresh lookup and every
+  cache hit, but a no-op unless the setting's on, a key's configured, the
+  song is actually Japanese, and it isn't already cached) and only resends
+  `lyrics-result` once the conversion lands — lyrics always appear
+  immediately in their original text first, same progressive-enhancement feel
+  as the AI transcription fallback itself.
 
 ## Lyrics cache (`lyricsCache.js`)
 

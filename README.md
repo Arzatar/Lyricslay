@@ -54,6 +54,12 @@ lyrics, and highlights the current line as the song plays.
 - Global hotkeys that work regardless of which window has focus, fully
   rebindable from the tray's *Keyboard Shortcuts…* window.
 - Optional launch at Windows startup, toggled from the tray menu.
+- **Romaji for Japanese lyrics** — tray menu → *Settings* → *Show romaji for
+  Japanese lyrics* converts whatever lyrics were found into romaji via
+  Gemini, so you can follow along and sing without reading hiragana/
+  katakana/kanji. Detection is automatic and free (no AI call for songs that
+  aren't Japanese); conversion happens once per song and is cached, same as
+  the lyrics themselves. Uses the same API key as *AI lyrics fallback* below.
 
 ## Requirements
 
@@ -159,6 +165,15 @@ for how it works and why it needs your own key rather than a shared one.
 Leaving it unconfigured is fully supported: the app just skips straight to
 the plain-text fallbacks (lyrics.ovh, Genius) instead.
 
+**Romaji for Japanese lyrics:** tray menu → *Settings* → *Show romaji for
+Japanese lyrics* toggles converting Japanese lyrics (from any source, not
+just the AI fallback above) into romaji. Needs the same Gemini key as *AI
+lyrics fallback* — if none is configured, the toggle does nothing. Detecting
+whether a song is actually Japanese is free/instant (no AI call for
+non-Japanese songs); conversion runs once per song in the background and is
+cached alongside the lyrics themselves, so turning the toggle off and back
+on later doesn't re-convert. See [ARCHITECTURE.md](ARCHITECTURE.md#romaji-for-japanese-lyrics-geminiromajijs-langdetectjs).
+
 **Signing in:** tray menu → *Sign in with YouTube Music (Premium)*
 starts Google's OAuth device sign-in flow: it opens **your actual default
 browser** (full autofill/saved passwords/passkeys, unlike an embedded login
@@ -237,8 +252,15 @@ src/
   ytmusic.js             Minimal InnerTube client: search + lyrics (used by both
                           anonymous and authenticated requests)
   lrclib.js              LRCLIB client: fetch + parse synced/plain lyrics
+  geminiClient.js         Shared Gemini plumbing: the model-fallback list and
+                          "try each until one works" request loop, used by
+                          both geminiLyrics.js and geminiRomaji.js
   geminiLyrics.js         Last-resort AI transcription: hands Gemini a YouTube
                           URL directly and asks for per-line timed lyrics
+  geminiRomaji.js         Converts Japanese lyrics to romaji via Gemini (text
+                          only, no video ingestion) for the romaji toggle
+  langDetect.js           Free, offline Japanese-script detection (hiragana/
+                          katakana) that gates the romaji feature
   geminiKeyStore.js       Encrypted on-disk storage for the user's own Gemini
                           API key (same safeStorage pattern as auth.js)
   gemini-key-preload.js   IPC bridge for the "AI lyrics fallback" settings window
