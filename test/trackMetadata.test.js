@@ -58,6 +58,21 @@ test('extractArtistFromTitle returns null when there is no separator', () => {
   assert.equal(extractArtistFromTitle('Just A Normal Title'), null);
 });
 
+test('extractArtistFromTitle does not split a hyphenated compound-word title', () => {
+  // Real case: SMTC reported this single-word title for a song with no
+  // artist prefix, and it was wrongly split into artist "Bling" / title
+  // "Bang-Bang-Born" on the first bare hyphen, which then searched for and
+  // matched an unrelated fan cover video instead of the real song.
+  assert.equal(extractArtistFromTitle('Bling-Bang-Bang-Born'), null);
+});
+
+test('extractArtistFromTitle still splits "Artist - Song" when the artist itself contains a hyphen', () => {
+  assert.deepEqual(extractArtistFromTitle('X-Ray Spex - Oh Bondage Up Yours!'), {
+    artist: 'X-Ray Spex',
+    title: 'Oh Bondage Up Yours!',
+  });
+});
+
 test('extractArtistFromTitle returns null for empty/missing input', () => {
   assert.equal(extractArtistFromTitle(''), null);
   assert.equal(extractArtistFromTitle(undefined), null);

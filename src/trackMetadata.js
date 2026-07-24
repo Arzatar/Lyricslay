@@ -35,8 +35,18 @@ function stripJunkAnnotations(title) {
 // pulling back out because the *artist* field is frequently just the uploader's
 // channel name for these re-uploads, not the actual artist — while the title
 // reliably repeats the real one.
+//
+// The dash/en-dash/em-dash branch requires whitespace on *both* sides of the
+// separator, unlike the colon branch (space required only after) — hyphenated
+// compound words in a real title ("Bling-Bang-Bang-Born") have no surrounding
+// whitespace around their dashes, but an "Artist - Song" separator always
+// does in practice. Caught live: without that requirement, the single-word
+// title "Bling-Bang-Bang-Born" got split on its first bare hyphen into artist
+// "Bling" / title "Bang-Bang-Born", which then searched for and matched a
+// completely unrelated video (a fan cover), instead of the actual song the
+// user was playing.
 function extractArtistFromTitle(title) {
-  const match = (title || '').match(/^(.{1,40}?)\s*[:\-–—]\s*(.+)$/);
+  const match = (title || '').match(/^(.{1,40}?)(?:\s*:\s+|\s+[\-–—]\s+)(.+)$/);
   if (!match) return null;
   const artist = match[1].trim();
   const songTitle = match[2].trim();
