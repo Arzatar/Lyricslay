@@ -54,16 +54,39 @@ function extractArtistFromTitle(title) {
   return { artist, title: songTitle };
 }
 
+// A real artist/band name reliably has a space or mixed case somewhere
+// ("JAM Project", "Los Mox"); an auto-generated channel handle (the case
+// this whole title-extraction exists to route around, e.g. "neohex") is
+// typically one bare lowercase word with neither. Missing entirely also
+// counts as untrustworthy — nothing to lose by preferring the title-derived
+// artist over emptiness.
+function looksLikeChannelHandle(artist) {
+  const a = (artist || '').trim();
+  if (!a) return true;
+  return !/\s/.test(a) && a === a.toLowerCase();
+}
+
 // Combines both: strip junk suffixes first, then check whether what's left starts
 // with an "Artist: Song" pattern. For a normal, already-clean title/artist pair
 // (the common case), this is a no-op — the regexes simply don't match anything.
+//
+// The title-extracted artist only replaces `rawArtist` when the latter looks
+// untrustworthy (see looksLikeChannelHandle) — caught live: JAM Project's
+// "THE HERO !!: Ikareru Kobushi ni Hi o Tsukero" is a single song's own
+// compound title (colon used *within* the title, not as an Artist: Song
+// separator), and unconditionally trusting the split replaced the perfectly
+// good raw artist "JAM Project" with "THE HERO !!" — a title fragment, not a
+// band name — breaking every search downstream. The heuristic can't tell
+// "Artist: Song" from "Title: Subtitle" from the string shape alone, so it
+// only overrides when the metadata we already have is the kind of thing this
+// extraction was built to fix in the first place.
 function cleanTrackMetadata(rawTitle, rawArtist) {
   const strippedTitle = stripJunkAnnotations(rawTitle);
   const extracted = extractArtistFromTitle(strippedTitle);
-  if (extracted) {
+  if (extracted && looksLikeChannelHandle(rawArtist)) {
     return { title: stripJunkAnnotations(extracted.title), artist: extracted.artist };
   }
   return { title: strippedTitle, artist: (rawArtist || '').trim() };
 }
 
-module.exports = { stripJunkAnnotations, extractArtistFromTitle, cleanTrackMetadata };
+module.exports = { stripJunkAnnotations, extractArtistFromTitle, looksLikeChannelHandle, cleanTrackMetadata };

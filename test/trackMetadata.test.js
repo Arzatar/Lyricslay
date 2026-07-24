@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { stripJunkAnnotations, extractArtistFromTitle, cleanTrackMetadata } = require('../src/trackMetadata');
+const { stripJunkAnnotations, extractArtistFromTitle, looksLikeChannelHandle, cleanTrackMetadata } = require('../src/trackMetadata');
 
 test('stripJunkAnnotations removes a trailing "(letra)" annotation', () => {
   assert.equal(stripJunkAnnotations('Curao manejo mejor! (letra)'), 'Curao manejo mejor!');
@@ -96,4 +96,29 @@ test('cleanTrackMetadata keeps the original artist when the title has no extract
 test('cleanTrackMetadata trims the original artist even when the title is untouched', () => {
   const result = cleanTrackMetadata('Bohemian Rhapsody', '  Queen  ');
   assert.deepEqual(result, { title: 'Bohemian Rhapsody', artist: 'Queen' });
+});
+
+test('looksLikeChannelHandle flags a bare lowercase word as an untrustworthy artist', () => {
+  assert.equal(looksLikeChannelHandle('neohex'), true);
+});
+
+test('looksLikeChannelHandle trusts a real-looking band/artist name', () => {
+  assert.equal(looksLikeChannelHandle('JAM Project'), false);
+  assert.equal(looksLikeChannelHandle('Queen'), false);
+});
+
+test('looksLikeChannelHandle treats missing/empty artist as untrustworthy', () => {
+  assert.equal(looksLikeChannelHandle(''), true);
+  assert.equal(looksLikeChannelHandle(undefined), true);
+  assert.equal(looksLikeChannelHandle(null), true);
+});
+
+test('cleanTrackMetadata keeps a legitimate artist instead of a title-derived fragment for a "Title: Subtitle" song', () => {
+  // Real case: JAM Project's own song title is "THE HERO !!: Ikareru Kobushi
+  // ni Hi o Tsukero" (colon used within the title itself, not as an
+  // Artist: Song separator). The already-correct artist "JAM Project" was
+  // getting thrown away in favor of "THE HERO !!" - a title fragment, not a
+  // band name - which broke every lyrics search downstream.
+  const result = cleanTrackMetadata('THE HERO !!: Ikareru Kobushi ni Hi o Tsukero', 'JAM Project');
+  assert.deepEqual(result, { title: 'THE HERO !!: Ikareru Kobushi ni Hi o Tsukero', artist: 'JAM Project' });
 });
