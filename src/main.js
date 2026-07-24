@@ -1174,7 +1174,9 @@ async function handleTrackTick(data, mode = 'auto') {
             videoId,
             geminiApiKey,
             (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
-            data.durationMs
+            data.durationMs,
+            data.title,
+            data.artist
           );
           if (myToken !== fetchToken) return;
           if (result) {

@@ -185,6 +185,18 @@ attempt has failed does the search settle for that remembered static result.
    the result against the song's already-known real duration and multiplies
    by 1000 if the ratio between them comes out suspiciously close to exactly
    that — see the comment above it in `geminiLyrics.js` for the exact heuristic.
+   Before any of that, `isVideoAvailable()` does a cheap keyless YouTube
+   oEmbed check on the videoId first — caught directly: a removed/private
+   video was still handed to Gemini as a `fileData.fileUri`, and instead of
+   erroring, the model complied with the forced JSON shape anyway and
+   fabricated a plausible-looking but entirely made-up transcription (the API
+   call itself came back 200 with well-formed JSON, so nothing in
+   `tryModels`' HTTP-status/parse checks catches it). The prompt now also
+   passes the known title/artist as grounding and explicitly tells the model
+   to return `[]` rather than invent lyrics if it can't actually access the
+   video or what it finds doesn't match — but the oEmbed pre-check is the
+   real fix, since it skips the call entirely for a video that's already
+   known to be gone instead of trusting the model to notice.
 6. **Static-only fallback** — reached only if every timed attempt above
    failed *and* no `staticFallback` was captured along the way (i.e. no
    Gemini key configured, or Gemini also failed/found nothing). At this
