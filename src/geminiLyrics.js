@@ -64,11 +64,36 @@ function splitKnownLyricsLines(text) {
     .filter((l) => l.length > 0 && !/^[[(].*[)\]]$/.test(l) && !SECTION_LABEL_RE.test(l));
 }
 
-function buildPrompt(title, artist, knownLines) {
+// Formats a known duration as an explicit calibration anchor for the
+// prompt. Confirmed directly on "Victim or Survivor" by Citizen Soldier: a
+// grounded response placed known line 24 ("I got a story too") 50.8s after
+// known line 23 ("Victim or survivor", the end of the first chorus) even
+// though the two are sung back to back with almost no gap — audible,
+// reported live. Nothing in the prompt previously told the model how long
+// the song actually was, so it had no anchor at all for converting "how far
+// into the video does this feel" into an absolute timestamp over a multi-
+// minute span; it was just as free to guess 50s as 2s. Giving it the real,
+// known duration up front (from SMTC, the same value used by
+// correctSecondsMistakenForMs/dropLinesPastKnownDuration below) can't force
+// correct pacing throughout, but at least gives every timestamp a fixed
+// point to be measured against instead of an unconstrained guess.
+function formatDurationHint(durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return '';
+  const totalSec = Math.round(durationMs / 1000);
+  const mm = Math.floor(totalSec / 60);
+  const ss = String(totalSec % 60).padStart(2, '0');
+  return `\n\nThe song's real, known duration is ${mm}:${ss} (${durationMs}ms total). Use this
+as your reference for elapsed time — your timestamps should be spread
+proportionally across the whole ${mm}:${ss}, and none should land at or after
+${durationMs}ms.`;
+}
+
+function buildPrompt(title, artist, knownLines, durationMs) {
   const known = title
     ? `The song is "${title}"${artist ? ` by ${artist}` : ''} — use this to confirm you're
 watching/hearing the right track.`
     : '';
+  const durationHint = formatDurationHint(durationMs);
 
   // Grounded mode: we already have verified-correct lyrics text (from a
   // lyrics database) but no timing for it. Rather than have Gemini
@@ -82,7 +107,7 @@ watching/hearing the right track.`
     return `You are given a YouTube video of a song, and that song's already-verified
 lyrics below as a numbered list of lines (no timestamps yet).
 
-${known}
+${known}${durationHint}
 
 Known lyrics:
 ${numbered}
@@ -104,7 +129,7 @@ Return ONLY a JSON array (no markdown, no commentary), in chronological order:
   return `You are given a YouTube video of a song. Watch/listen to it and
 transcribe its lyrics.
 
-${known}
+${known}${durationHint}
 
 If you cannot actually access/watch the video, or what you can access clearly
 isn't this song (wrong track, removed/unavailable video, silent/blank video,
@@ -208,6 +233,175 @@ function dropLinesPastKnownDuration(timed, durationMs) {
   return timed.filter((l) => l.timeMs <= limit);
 }
 
+// Windowed grounded mode: instead of asking Gemini to output a millisecond
+// figure directly (unreliable — see below), the video is split into fixed
+// windows and, for each one, Gemini is only asked "which of the known lines
+// occur in this specific clip, in order" — a classification question, not a
+// time-estimation one. We then interpolate each window's lines evenly across
+// its own known start/end.
+//
+// Confirmed directly, live, against the real API for "Victim or Survivor" by
+// Citizen Soldier (a 175071ms track): asking for a timestamp (even a
+// clip-relative one, with the video clipped via videoMetadata
+// startOffset/endOffset) reproducibly placed known line 24 ("I got a story
+// too") at an absolute ~102s — identical across full-video and "clipped"
+// attempts alike, and identical whether the model was asked to add the clip
+// offset itself or report clip-relative and let our code add it — even
+// though line 23 ends at ~52s and the two are sung back to back. Whatever
+// that number was, it wasn't coming from a real read of elapsed time in the
+// clip: an out-of-bounds clip (1000s-1010s of a ~175s video) does 500 with an
+// internal error, so the API is validating the offset against the real
+// video, yet a well-formed in-bounds clip still didn't change the reported
+// number at all — the model just isn't tracking absolute elapsed seconds
+// reliably over a multi-minute span with no visual timing cues (this video,
+// like most "Topic" channel uploads, is a static album-art image throughout).
+//
+// Simply asking it to transcribe (not timestamp) a bounded clip, however,
+// was accurate and stable: a 40-50s clip came back with exactly the expected
+// chorus lines, a 90-100s clip came back with the *next* chorus repeat
+// (proving verse 2 actually falls well before 90s, nowhere near the ~102s
+// the timestamp-asking approach kept insisting on). Reframing the ask from
+// "when does this happen" (numeric estimation, unreliable) to "which of
+// these known lines is in this clip" (classification, verified 4/4
+// identical across repeated live calls at 55-80s) turns the model's
+// demonstrated strength (accurate transcription within a bounded window)
+// into the thing it's actually being asked to do.
+const WINDOW_MS = 25000;
+// Guards against a pathological/incorrect durationMs (e.g. a bad SMTC
+// report) turning one lyrics fetch into dozens of Gemini calls.
+const MAX_WINDOWS = 20;
+
+function buildWindowPrompt(title, artist, knownLines, startSec, endSec) {
+  const known = title
+    ? `The song is "${title}"${artist ? ` by ${artist}` : ''}.`
+    : '';
+  const numbered = knownLines.map((l, i) => `${i + 1}. ${l}`).join('\n');
+  return `${known}
+
+Here is the full, already-verified numbered lyrics list for this song:
+${numbered}
+
+You are given only a short clip of the song — from ${startSec}s to ${endSec}s
+of the original video, not the whole song. Listen to this clip and identify
+which of the numbered lines above are actually sung within it, in the order
+they occur. Do not guess based on typical song structure or lyrics you
+already know from training — only report lines you actually hear sung in
+THIS specific clip. If none of the lines occur in this clip, return [].
+
+Return ONLY a JSON array of the 1-based indices, in chronological order
+(e.g. [16,17,18]). No markdown, no commentary, no timestamps.`;
+}
+
+// A window response is legitimately an empty array (that window has no
+// sung line worth reporting, e.g. a instrumental break) — that's not the
+// same as a parse failure, so callers must be able to tell the two apart
+// (see fetchWindowedGroundedTimedLyrics's onResponse wrapper below).
+function parseWindowIndices(json, knownLines) {
+  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  return parsed
+    .map((n) => Number(n))
+    .filter((n) => Number.isInteger(n) && n >= 1 && n <= knownLines.length);
+}
+
+// Spreads a window's identified lines evenly across its own [start, end)
+// span, each centered in its equal-sized slot. Deliberately simple — pacing
+// within a ~25s window won't be perfectly uniform, but this stays close
+// (bounded error of at most one window's width) instead of the tens of
+// seconds of drift the direct-timestamp approach produced.
+function interpolateWindowTimestamps(indices, knownLines, windowStartMs, windowEndMs) {
+  const count = indices.length;
+  if (count === 0) return [];
+  const span = windowEndMs - windowStartMs;
+  return indices.map((index, pos) => ({
+    timeMs: Math.round(windowStartMs + ((pos + 0.5) / count) * span),
+    text: knownLines[index - 1],
+  }));
+}
+
+// Windows are cut at fixed times, not at phrase boundaries, so a phrase
+// straddling a cut is sometimes independently picked up by both the window
+// ending just before it and the window starting just after — confirmed
+// directly: a real run had the whole 4-line verse-2 opening
+// ([24,25,26,27]) reported as the tail of one window's list AND again as
+// the head of the very next window's list, so it displayed twice in a row.
+// If the current window's list starts with the same run of indices the
+// previous window's list ended with, that's almost certainly the same
+// bled-through occurrence rather than a genuine back-to-back repeat (a real
+// repeat — e.g. the four-times "I'm not.../I'm the survivor" refrain — gets
+// reported within a *single* window's own list, not split as one window's
+// tail plus the next window's head), so the duplicated prefix is dropped.
+function trimBoundaryOverlap(prevIndices, currIndices) {
+  const maxOverlap = Math.min(prevIndices.length, currIndices.length);
+  for (let k = maxOverlap; k > 0; k--) {
+    const prevTail = prevIndices.slice(prevIndices.length - k);
+    const currHead = currIndices.slice(0, k);
+    if (prevTail.every((v, i) => v === currHead[i])) {
+      return currIndices.slice(k);
+    }
+  }
+  return currIndices;
+}
+
+async function fetchWindowedGroundedTimedLyrics(videoId, apiKey, onAttempt, durationMs, title, artist, knownLines) {
+  const windowCount = Math.min(MAX_WINDOWS, Math.ceil(durationMs / WINDOW_MS));
+  const windowSize = durationMs / windowCount;
+  const timed = [];
+  const modelsUsed = new Set();
+  let prevIndices = [];
+
+  for (let i = 0; i < windowCount; i++) {
+    const start = Math.round(i * windowSize);
+    const end = Math.round(Math.min((i + 1) * windowSize, durationMs));
+    const startSec = Math.floor(start / 1000);
+    const endSec = Math.ceil(end / 1000);
+
+    const outcome = await tryModels(
+      apiKey,
+      () => ({
+        contents: [
+          {
+            parts: [
+              {
+                fileData: { fileUri: `https://www.youtube.com/watch?v=${videoId}` },
+                videoMetadata: { startOffset: `${startSec}s`, endOffset: `${endSec}s` },
+              },
+              { text: buildWindowPrompt(title, artist, knownLines, startSec, endSec) },
+            ],
+          },
+        ],
+        generationConfig: { responseMimeType: 'application/json' },
+      }),
+      (json) => {
+        const indices = parseWindowIndices(json, knownLines);
+        // Wrap so a legitimate empty window ([]) is still a truthy "hit" to
+        // tryModels, distinct from a parse failure (null) that should retry
+        // the next model.
+        return indices ? { indices } : null;
+      },
+      (model, outcome) => onAttempt?.(model, `window ${startSec}-${endSec}s: ${outcome}`)
+    );
+
+    if (outcome) {
+      modelsUsed.add(outcome.model);
+      const trimmedIndices = trimBoundaryOverlap(prevIndices, outcome.result.indices);
+      timed.push(...interpolateWindowTimestamps(trimmedIndices, knownLines, start, end));
+      prevIndices = outcome.result.indices;
+    }
+  }
+
+  return timed.length > 0 ? { timed, models: modelsUsed } : null;
+}
+
 // Returns { timed, model, correctedUnits } from whichever model worked
 // first, or null if the video has no usable lyrics (including: the video
 // itself is gone — checked up front, before spending a model call on it).
@@ -219,10 +413,13 @@ function dropLinesPastKnownDuration(timed, durationMs) {
 // transcribing blind. Throws only once every candidate model has failed.
 // `knownLyrics` (optional) is a plain-text lyrics blob already found from a
 // database source (LRCLIB/YT Music/Genius/lyrics.ovh) but with no timing —
-// when present, Gemini is only asked to time those exact lines (see
-// buildPrompt's grounded branch) instead of transcribing the song blind,
-// so a source that already got the wording right can't be second-guessed
-// by mishearing.
+// when present, and a known durationMs is available to tile the video into
+// windows, Gemini is only asked which known lines occur in each window (see
+// fetchWindowedGroundedTimedLyrics above) instead of transcribing the song
+// blind or self-reporting an elapsed-time estimate — both proved unreliable
+// live against the real API for a repetitive rock chorus. Without a known
+// durationMs, grounded mode falls back to the older single-call approach
+// (windowing needs a total length to tile against).
 async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, title, artist, knownLyrics) {
   if (!apiKey || !videoId) return null;
 
@@ -234,6 +431,21 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, ti
   const knownLines = splitKnownLyricsLines(knownLyrics);
   const grounded = knownLines.length > 0;
 
+  if (grounded && Number.isFinite(durationMs) && durationMs > 0) {
+    const windowed = await fetchWindowedGroundedTimedLyrics(videoId, apiKey, onAttempt, durationMs, title, artist, knownLines);
+    if (!windowed) return null;
+    const trimmed = dropLinesPastKnownDuration(windowed.timed, durationMs);
+    if (trimmed.length === 0) return null;
+    return {
+      timed: trimmed,
+      model: [...windowed.models].join('+') || 'unknown',
+      correctedUnits: false,
+      droppedPastDuration: trimmed.length !== windowed.timed.length,
+      grounded: true,
+      windowed: true,
+    };
+  }
+
   const outcome = await tryModels(
     apiKey,
     () => ({
@@ -241,7 +453,7 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, ti
         {
           parts: [
             { fileData: { fileUri: `https://www.youtube.com/watch?v=${videoId}` } },
-            { text: buildPrompt(title, artist, knownLines) },
+            { text: buildPrompt(title, artist, knownLines, durationMs) },
           ],
         },
       ],
@@ -268,8 +480,11 @@ module.exports = {
   fetchGeminiTimedLyrics,
   correctSecondsMistakenForMs,
   dropLinesPastKnownDuration,
+  interpolateWindowTimestamps,
+  trimBoundaryOverlap,
   parseTimedLyrics,
   parseGroundedTimedLyrics,
+  parseWindowIndices,
   splitKnownLyricsLines,
   isVideoAvailable,
 };

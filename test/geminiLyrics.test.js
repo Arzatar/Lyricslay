@@ -5,8 +5,11 @@ const assert = require('node:assert/strict');
 const {
   correctSecondsMistakenForMs,
   dropLinesPastKnownDuration,
+  interpolateWindowTimestamps,
+  trimBoundaryOverlap,
   parseTimedLyrics,
   parseGroundedTimedLyrics,
+  parseWindowIndices,
   splitKnownLyricsLines,
 } = require('../src/geminiLyrics');
 
@@ -155,4 +158,61 @@ test('parseGroundedTimedLyrics drops out-of-range or non-integer indices', () =>
 test('parseGroundedTimedLyrics returns null when nothing valid survives', () => {
   const json = { candidates: [{ content: { parts: [{ text: '[]' }] } }] };
   assert.equal(parseGroundedTimedLyrics(json, ['a']), null);
+});
+
+test('parseWindowIndices parses a plain array of 1-based indices', () => {
+  const knownLines = ['a', 'b', 'c'];
+  const json = { candidates: [{ content: { parts: [{ text: '[2,3]' }] } }] };
+  assert.deepEqual(parseWindowIndices(json, knownLines), [2, 3]);
+});
+
+test('parseWindowIndices treats a legitimately empty window as [], not a failure', () => {
+  const json = { candidates: [{ content: { parts: [{ text: '[]' }] } }] };
+  assert.deepEqual(parseWindowIndices(json, ['a']), []);
+});
+
+test('parseWindowIndices drops out-of-range or non-integer entries', () => {
+  const knownLines = ['a', 'b'];
+  const json = { candidates: [{ content: { parts: [{ text: '[1,0,3,1.5,2]' }] } }] };
+  assert.deepEqual(parseWindowIndices(json, knownLines), [1, 2]);
+});
+
+test('parseWindowIndices returns null (not []) for malformed JSON, so callers retry', () => {
+  const json = { candidates: [{ content: { parts: [{ text: 'not json' }] } }] };
+  assert.equal(parseWindowIndices(json, ['a']), null);
+});
+
+test('interpolateWindowTimestamps spreads indices evenly across the window span', () => {
+  const knownLines = ['x', 'y', 'z', 'w'];
+  // Real case, confirmed live: window 55-80s (25000ms span) classified as
+  // containing known lines 24-34 in order.
+  const result = interpolateWindowTimestamps([1, 2], knownLines, 55000, 80000);
+  assert.deepEqual(result, [
+    { timeMs: 61250, text: 'x' },
+    { timeMs: 73750, text: 'y' },
+  ]);
+});
+
+test('interpolateWindowTimestamps returns [] for an empty window', () => {
+  assert.deepEqual(interpolateWindowTimestamps([], ['x'], 0, 25000), []);
+});
+
+test('trimBoundaryOverlap drops a whole-block repeat bled across a window cut', () => {
+  // Real case, confirmed live: verse-2's opening 4-line block [24,25,26,27]
+  // was reported as the tail of one window's list AND again as the head of
+  // the next window's list, displaying the same four lines twice in a row.
+  assert.deepEqual(trimBoundaryOverlap([20, 21, 24, 25, 26, 27], [24, 25, 26, 27, 28, 29]), [28, 29]);
+});
+
+test('trimBoundaryOverlap leaves genuinely distinct windows alone', () => {
+  assert.deepEqual(trimBoundaryOverlap([1, 2, 3], [4, 5, 6]), [4, 5, 6]);
+});
+
+test('trimBoundaryOverlap does not eat a real intentional repeat reported within one window', () => {
+  // The four-times chorus-tag refrain is reported as repeats *within* a
+  // single window's own list, not split across windows, so a window that
+  // legitimately starts with the same index its predecessor ended on (e.g.
+  // both windows genuinely touch the same repeated tag line) should only
+  // have the exact overlapping run trimmed, not anything beyond it.
+  assert.deepEqual(trimBoundaryOverlap([33, 34], [34, 35, 34, 35]), [35, 34, 35]);
 });
