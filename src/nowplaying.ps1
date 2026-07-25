@@ -1,7 +1,7 @@
 ﻿# Streams "now playing" media info as one JSON line per tick, read from Windows'
-# GlobalSystemMediaTransportControlsSessionManager (SMTC). Works for YouTube / YouTube Music
-# playing in any browser tab, the YT Music PWA, or the desktop app, since all of them report
-# to the OS media session used for the volume-flyout / hardware media keys.
+# GlobalSystemMediaTransportControlsSessionManager (SMTC). Works for any app that reports
+# to the OS media session used for the volume-flyout / hardware media keys - YouTube /
+# YouTube Music in any browser tab, the YT Music PWA/desktop app, Spotify, etc.
 
 $ErrorActionPreference = 'Stop'
 
@@ -20,24 +20,36 @@ function Await($WinRtTask, $ResultType) {
 }
 
 function Get-PreferredSession($manager) {
+    # $preferredKeywords only breaks ties (multiple sessions in the same playback
+    # state) - it must never let a *paused* browser/music-app session outrank an
+    # app that's actually playing right now (reported live: Spotify actively
+    # playing was ignored in favor of a stale paused Opera tab, since Spotify's
+    # appId never matches any keyword and used to only get picked up via
+    # GetCurrentSession() when literally no keyword session existed at all).
     $sessions = $manager.GetSessions()
     $preferredKeywords = @('music', 'yt', 'chrome', 'msedge', 'firefox', 'brave', 'opera')
-    $best = $null
+    $playingPreferred = $null
+    $playingAny = $null
+    $pausedPreferred = $null
     foreach ($s in $sessions) {
         $appId = $s.SourceAppUserModelId.ToLowerInvariant()
+        $isPreferred = $false
         foreach ($kw in $preferredKeywords) {
-            if ($appId.Contains($kw)) {
-                try {
-                    $pb = $s.GetPlaybackInfo()
-                    if ($pb.PlaybackStatus -eq [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus]::Playing) {
-                        return $s
-                    }
-                    if ($best -eq $null) { $best = $s }
-                } catch {}
-            }
+            if ($appId.Contains($kw)) { $isPreferred = $true; break }
+        }
+        try {
+            $isPlaying = $s.GetPlaybackInfo().PlaybackStatus -eq [Windows.Media.Control.GlobalSystemMediaTransportControlsSessionPlaybackStatus]::Playing
+        } catch { continue }
+        if ($isPlaying) {
+            if ($isPreferred -and $null -eq $playingPreferred) { $playingPreferred = $s }
+            if ($null -eq $playingAny) { $playingAny = $s }
+        } elseif ($isPreferred -and $null -eq $pausedPreferred) {
+            $pausedPreferred = $s
         }
     }
-    if ($best -ne $null) { return $best }
+    if ($null -ne $playingPreferred) { return $playingPreferred }
+    if ($null -ne $playingAny) { return $playingAny }
+    if ($null -ne $pausedPreferred) { return $pausedPreferred }
     try { return $manager.GetCurrentSession() } catch { return $null }
 }
 
