@@ -35,11 +35,55 @@ async function isVideoAvailable(videoId) {
   }
 }
 
-function buildPrompt(title, artist) {
+// Strips section headers ("[Chorus]", "(Verse 2)") and blank lines out of a
+// plain-text lyrics blob — those aren't actually sung, so asking Gemini to
+// time them as if they were a line would either produce a bogus timestamp or
+// tempt it to skip/renumber entries, throwing off the index-based mapping
+// splitKnownLyricsLines is used for in buildPrompt/parseGroundedTimedLyrics.
+function splitKnownLyricsLines(text) {
+  if (!text) return [];
+  return text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !/^[[(].*[)\]]$/.test(l));
+}
+
+function buildPrompt(title, artist, knownLines) {
   const known = title
     ? `The song is "${title}"${artist ? ` by ${artist}` : ''} — use this to confirm you're
 watching/hearing the right track.`
     : '';
+
+  // Grounded mode: we already have verified-correct lyrics text (from a
+  // lyrics database) but no timing for it. Rather than have Gemini
+  // transcribe the song blind — which risks mishearing lines the database
+  // already got right — hand it the known lines and ask only for *when*
+  // each is sung, referenced by index so the exact wording it returns is
+  // never in question (we substitute the original text back in ourselves;
+  // see parseGroundedTimedLyrics).
+  if (knownLines && knownLines.length > 0) {
+    const numbered = knownLines.map((l, i) => `${i + 1}. ${l}`).join('\n');
+    return `You are given a YouTube video of a song, and that song's already-verified
+lyrics below as a numbered list of lines (no timestamps yet).
+
+${known}
+
+Known lyrics:
+${numbered}
+
+Watch/listen to the video and, for each line above that is actually sung,
+report the timestamp (in milliseconds from the start of the video) at which
+it begins. If a line repeats later in the song (e.g. a chorus), report every
+occurrence. Do not invent lines that aren't in the numbered list above, and
+do not renumber or reorder the list.
+
+If you cannot actually access/watch the video, or what you can access clearly
+isn't this song (wrong track, removed/unavailable video, silent/blank video,
+etc.), return [] instead of guessing.
+
+Return ONLY a JSON array (no markdown, no commentary), in chronological order:
+[{"timeMs": <integer MILLISECONDS from the start of the video — NOT seconds, e.g. a line starting at 1 minute 5 seconds in is timeMs: 65000, not 65>, "index": <the line's 1-based number from the list above>}, ...]`;
+  }
 
   return `You are given a YouTube video of a song. Watch/listen to it and
 transcribe its lyrics.
@@ -81,6 +125,36 @@ function parseTimedLyrics(json) {
   return timed.length > 0 ? timed : null;
 }
 
+// Grounded counterpart to parseTimedLyrics: the response references known
+// lines by 1-based index (see buildPrompt's grounded branch) instead of
+// repeating text, so the "text" in the result is always the original
+// database line verbatim — Gemini only ever supplies the timing.
+function parseGroundedTimedLyrics(json, knownLines) {
+  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+
+  const timed = parsed
+    .map((line) => {
+      const index = Number(line?.index);
+      const timeMs = Number(line?.timeMs);
+      if (!Number.isInteger(index) || index < 1 || index > knownLines.length) return null;
+      if (!Number.isFinite(timeMs) || timeMs < 0) return null;
+      return { timeMs, text: knownLines[index - 1] };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.timeMs - b.timeMs);
+
+  return timed.length > 0 ? timed : null;
+}
+
 // The prompt asks for milliseconds explicitly (with an example), but
 // verified directly that a model can still answer in seconds anyway — a
 // real 238-second song came back with every line under 220 "ms", i.e. the
@@ -110,13 +184,22 @@ function correctSecondsMistakenForMs(timed, durationMs) {
 // `artist` are optional but strongly recommended too — passed into the
 // prompt so the model has something to confirm the video against instead of
 // transcribing blind. Throws only once every candidate model has failed.
-async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, title, artist) {
+// `knownLyrics` (optional) is a plain-text lyrics blob already found from a
+// database source (LRCLIB/YT Music/Genius/lyrics.ovh) but with no timing —
+// when present, Gemini is only asked to time those exact lines (see
+// buildPrompt's grounded branch) instead of transcribing the song blind,
+// so a source that already got the wording right can't be second-guessed
+// by mishearing.
+async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, title, artist, knownLyrics) {
   if (!apiKey || !videoId) return null;
 
   if (!(await isVideoAvailable(videoId))) {
     onAttempt?.('preflight', 'video unavailable, skipping');
     return null;
   }
+
+  const knownLines = splitKnownLyricsLines(knownLyrics);
+  const grounded = knownLines.length > 0;
 
   const outcome = await tryModels(
     apiKey,
@@ -125,19 +208,26 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, ti
         {
           parts: [
             { fileData: { fileUri: `https://www.youtube.com/watch?v=${videoId}` } },
-            { text: buildPrompt(title, artist) },
+            { text: buildPrompt(title, artist, knownLines) },
           ],
         },
       ],
       generationConfig: { responseMimeType: 'application/json' },
     }),
-    (json) => parseTimedLyrics(json),
+    (json) => (grounded ? parseGroundedTimedLyrics(json, knownLines) : parseTimedLyrics(json)),
     onAttempt
   );
   if (!outcome) return null;
 
   const corrected = correctSecondsMistakenForMs(outcome.result, durationMs);
-  return { timed: corrected, model: outcome.model, correctedUnits: corrected !== outcome.result };
+  return { timed: corrected, model: outcome.model, correctedUnits: corrected !== outcome.result, grounded };
 }
 
-module.exports = { fetchGeminiTimedLyrics, correctSecondsMistakenForMs, parseTimedLyrics, isVideoAvailable };
+module.exports = {
+  fetchGeminiTimedLyrics,
+  correctSecondsMistakenForMs,
+  parseTimedLyrics,
+  parseGroundedTimedLyrics,
+  splitKnownLyricsLines,
+  isVideoAvailable,
+};

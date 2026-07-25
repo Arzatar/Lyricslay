@@ -2,7 +2,12 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { correctSecondsMistakenForMs, parseTimedLyrics } = require('../src/geminiLyrics');
+const {
+  correctSecondsMistakenForMs,
+  parseTimedLyrics,
+  parseGroundedTimedLyrics,
+  splitKnownLyricsLines,
+} = require('../src/geminiLyrics');
 
 test('correctSecondsMistakenForMs multiplies by 1000 when the model answered in seconds', () => {
   // Real case: a 238.492s song came back with every line under 220 "ms".
@@ -70,4 +75,45 @@ test('parseTimedLyrics returns null for an empty array (instrumental track)', ()
 test('parseTimedLyrics returns null for malformed JSON', () => {
   const json = { candidates: [{ content: { parts: [{ text: 'not json' }] } }] };
   assert.equal(parseTimedLyrics(json), null);
+});
+
+test('splitKnownLyricsLines strips blank lines and pure section markers', () => {
+  const text = '[Chorus]\nHello world\n\n(Verse 2)\nGoodbye\n[Bridge] extra';
+  assert.deepEqual(splitKnownLyricsLines(text), ['Hello world', 'Goodbye', '[Bridge] extra']);
+});
+
+test('splitKnownLyricsLines returns [] for empty/missing input', () => {
+  assert.deepEqual(splitKnownLyricsLines(''), []);
+  assert.deepEqual(splitKnownLyricsLines(null), []);
+  assert.deepEqual(splitKnownLyricsLines(undefined), []);
+});
+
+test('parseGroundedTimedLyrics maps indices back to the original known-line text', () => {
+  const knownLines = ['Hello world', 'Goodbye'];
+  const json = {
+    candidates: [{ content: { parts: [{ text: '[{"timeMs":5000,"index":2},{"timeMs":1000,"index":1}]' }] } }],
+  };
+  assert.deepEqual(parseGroundedTimedLyrics(json, knownLines), [
+    { timeMs: 1000, text: 'Hello world' },
+    { timeMs: 5000, text: 'Goodbye' },
+  ]);
+});
+
+test('parseGroundedTimedLyrics drops out-of-range or non-integer indices', () => {
+  const knownLines = ['Hello world', 'Goodbye'];
+  const json = {
+    candidates: [{
+      content: {
+        parts: [{
+          text: '[{"timeMs":1000,"index":1},{"timeMs":2000,"index":0},{"timeMs":3000,"index":3},{"timeMs":4000,"index":1.5}]',
+        }],
+      },
+    }],
+  };
+  assert.deepEqual(parseGroundedTimedLyrics(json, knownLines), [{ timeMs: 1000, text: 'Hello world' }]);
+});
+
+test('parseGroundedTimedLyrics returns null when nothing valid survives', () => {
+  const json = { candidates: [{ content: { parts: [{ text: '[]' }] } }] };
+  assert.equal(parseGroundedTimedLyrics(json, ['a']), null);
 });

@@ -1159,16 +1159,19 @@ async function handleTrackTick(data, mode = 'auto') {
     // request-encryption scheme, not a plain keyless GET as assumed; skipped
     // for now rather than half-implementing crypto plumbing in a prototype.
 
-    // Step 5: last resort — ask Gemini to transcribe the song directly from
-    // its YouTube video (no audio capture on our end; Gemini's API can
-    // ingest a YouTube URL as input). Only runs if nothing above found
-    // *timed* lyrics. See geminiLyrics.js.
+    // Step 5: last resort — ask Gemini to time the song's lyrics against its
+    // YouTube video (no audio capture on our end; Gemini's API can ingest a
+    // YouTube URL as input). Only runs if nothing above found *timed*
+    // lyrics. If a staticFallback was already captured (a database source
+    // got the wording right but had no timing), it's handed to Gemini as
+    // grounding so it only has to time known-correct lines instead of
+    // transcribing the song blind — see geminiLyrics.js's grounded prompt.
     const geminiApiKey = getGeminiApiKey();
     if (!lyrics && geminiApiKey) {
       const videoId = ytmResult?.videoId ?? (await searchSong(data.title, data.artist))?.videoId;
       if (myToken !== fetchToken) return;
       if (videoId) {
-        logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...`);
+        logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...${staticFallback ? ` (grounded on ${staticFallback.source})` : ''}`);
         try {
           const result = await fetchGeminiTimedLyrics(
             videoId,
@@ -1176,14 +1179,15 @@ async function handleTrackTick(data, mode = 'auto') {
             (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
             data.durationMs,
             data.title,
-            data.artist
+            data.artist,
+            staticFallback?.static ?? null
           );
           if (myToken !== fetchToken) return;
           if (result) {
             if (result.correctedUnits) {
               logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
             }
-            lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}` };
+            lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}${result.grounded ? `+${staticFallback.source}` : ''}` };
           }
         } catch (err) {
           logger.log('[lyrics] gemini: all candidate models failed:', err?.message || err);
