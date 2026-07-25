@@ -13,11 +13,53 @@ const HEADERS = {
   'User-Agent': 'lyricslay (personal, non-commercial overlay app)',
 };
 
+// Some LRCLIB submissions concatenate a full second copy of the song into
+// the same .lrc file — confirmed directly on YOASOBI's "アイドル" (LRCLIB id
+// 2116394): the file has the real Japanese lyrics from 00:00 to 03:29, then
+// immediately starts over at 00:00 again with a line-by-line romaji
+// transliteration of the exact same song, timestamps and all. Parsed
+// naively, every real moment in the song ends up with two entries — the
+// Japanese line and, right next to it after sorting, its romaji restated —
+// which displays as every lyric appearing twice in a row.
+//
+// The distinguishing signature is the clock itself jumping backward by a
+// huge margin after already reaching deep into the song — not merely a
+// repeated line (a real chorus repeats forward in time, never backward) and
+// not a single mistimed line either (an isolated out-of-order submission
+// error stays close to its neighbors, it doesn't reset all the way back
+// near zero). Both thresholds below matter: MIN_RUNNING_MAX_MS keeps this
+// from firing on the first few seconds of a song (where small submission
+// errors are least consequential and most likely to be a single mistimed
+// line, not a whole restart), and RESTART_DROP_RATIO requires the drop to
+// land back near the very beginning, not just earlier. Verified this
+// doesn't misfire on a legitimately hyper-repetitive song: Daft Punk's
+// "Around the World" repeats one line ~74 times over 6+ minutes with
+// strictly increasing timestamps throughout (LRCLIB id 22027192) — nothing
+// here ever looks like a restart, so every repeat survives untouched.
+const MIN_RUNNING_MAX_MS = 60_000;
+const RESTART_DROP_RATIO = 0.1;
+
+// Pure — exported for unit testing. Expects `pairs` in the file's original
+// order (before sorting by time), since the restart signature is about
+// where the clock goes next in the file, not about final chronological
+// order.
+function dropDuplicatedSecondPass(pairs) {
+  let runningMax = 0;
+  for (let i = 0; i < pairs.length; i++) {
+    const { timeMs } = pairs[i];
+    if (runningMax >= MIN_RUNNING_MAX_MS && timeMs < runningMax * RESTART_DROP_RATIO) {
+      return pairs.slice(0, i);
+    }
+    if (timeMs > runningMax) runningMax = timeMs;
+  }
+  return pairs;
+}
+
 // "[01:02.34]Some text" -> { timeMs: 62340, text: 'Some text' }
 function parseLrc(lrc) {
   if (!lrc) return null;
   const lines = lrc.split(/\r?\n/);
-  const out = [];
+  const raw = [];
   const timeTag = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
 
   for (const rawLine of lines) {
@@ -31,10 +73,11 @@ function parseLrc(lrc) {
       const sec = Number(m[2]);
       const frac = m[3] ? Number(m[3].padEnd(3, '0')) : 0;
       const timeMs = min * 60000 + sec * 1000 + frac;
-      out.push({ timeMs, text });
+      raw.push({ timeMs, text });
     }
   }
-  if (out.length === 0) return null;
+  if (raw.length === 0) return null;
+  const out = dropDuplicatedSecondPass(raw);
   return out.sort((a, b) => a.timeMs - b.timeMs);
 }
 
@@ -106,4 +149,4 @@ async function fetchSyncedLyrics(title, artist, durationSec) {
   return null;
 }
 
-module.exports = { fetchSyncedLyrics, parseLrc };
+module.exports = { fetchSyncedLyrics, parseLrc, dropDuplicatedSecondPass };
