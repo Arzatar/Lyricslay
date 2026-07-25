@@ -1006,10 +1006,12 @@ function toggleShowRomaji() {
 // mode picks which primary source(s) "Re-search lyrics for this song" starts
 // from, each keeping its own natural downstream fallback tail:
 //   'auto'    - the full default chain, unchanged (YT auth -> LRCLIB -> YT
-//               unauth -> Gemini -> static).
+//               unauth -> lyrics.ovh -> Genius -> Gemini -> static).
 //   'youtube' - YT Music only (auth then unauth), skipping LRCLIB entirely,
-//               then falling through to Gemini -> static same as auto.
-//   'api'     - LRCLIB only, skipping YouTube entirely, then Gemini -> static.
+//               then falling through to lyrics.ovh -> Genius -> Gemini ->
+//               static same as auto.
+//   'api'     - LRCLIB only, skipping YouTube entirely, then lyrics.ovh ->
+//               Genius -> Gemini -> static.
 //   'gemini'  - Gemini only. No fallback after it at all, static included -
 //               it's already the last real attempt in the normal chain, so
 //               picking it explicitly means "just the AI, nothing else."
@@ -1159,50 +1161,14 @@ async function handleTrackTick(data, mode = 'auto') {
     // request-encryption scheme, not a plain keyless GET as assumed; skipped
     // for now rather than half-implementing crypto plumbing in a prototype.
 
-    // Step 5: last resort — ask Gemini to time the song's lyrics against its
-    // YouTube video (no audio capture on our end; Gemini's API can ingest a
-    // YouTube URL as input). Only runs if nothing above found *timed*
-    // lyrics. If a staticFallback was already captured (a database source
-    // got the wording right but had no timing), it's handed to Gemini as
-    // grounding so it only has to time known-correct lines instead of
-    // transcribing the song blind — see geminiLyrics.js's grounded prompt.
-    const geminiApiKey = getGeminiApiKey();
-    if (!lyrics && geminiApiKey) {
-      const videoId = ytmResult?.videoId ?? (await searchSong(data.title, data.artist))?.videoId;
-      if (myToken !== fetchToken) return;
-      if (videoId) {
-        logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...${staticFallback ? ` (grounded on ${staticFallback.source})` : ''}`);
-        try {
-          const result = await fetchGeminiTimedLyrics(
-            videoId,
-            geminiApiKey,
-            (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
-            data.durationMs,
-            data.title,
-            data.artist,
-            staticFallback?.static ?? null
-          );
-          if (myToken !== fetchToken) return;
-          if (result) {
-            if (result.correctedUnits) {
-              logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
-            }
-            lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}${result.grounded ? `+${staticFallback.source}` : ''}` };
-          }
-        } catch (err) {
-          logger.log('[lyrics] gemini: all candidate models failed:', err?.message || err);
-        }
-      } else {
-        logger.log('[lyrics] gemini: no videoId to give it, skipping');
-      }
-    }
-
-    // Nothing timed anywhere, including AI — try the remaining plain-text-only
-    // sources (if step 1-3 didn't already leave us a staticFallback) before
-    // finally giving up, same as the old chain's tail end. Skipped entirely
-    // in 'gemini' mode — picking Gemini explicitly means only the AI, no
-    // static fallback of any kind, since it's already the last real attempt
-    // in the normal chain.
+    // Steps 5a/5b: the remaining plain-text-only sources, tried *before*
+    // Gemini now (moved up from the tail end of the chain) so that a
+    // wording-only hit from either of them is also available to ground
+    // Gemini's timing pass below, instead of only ever being used as a
+    // last-resort static display after Gemini already ran blind. Skipped
+    // entirely in 'gemini' mode — picking Gemini explicitly means only the
+    // AI, no static fallback of any kind, since it's already the last real
+    // attempt in the normal chain.
     if (!lyrics && !staticFallback && mode !== 'gemini') {
       try {
         const ovh = await lyricsOvh.fetchLyrics(data.title, data.artist);
@@ -1230,6 +1196,48 @@ async function handleTrackTick(data, mode = 'auto') {
         }
       } catch (err) {
         logger.log('[lyrics] genius: request failed:', err?.message || err);
+      }
+    }
+
+    // Step 6: last resort — ask Gemini to time the song's lyrics against its
+    // YouTube video (no audio capture on our end; Gemini's API can ingest a
+    // YouTube URL as input). Only runs if nothing above found *timed*
+    // lyrics. If a staticFallback was already captured by any source above
+    // (a database source got the wording right but had no timing), it's
+    // handed to Gemini as grounding so it only has to time known-correct
+    // lines instead of transcribing the song blind — see geminiLyrics.js's
+    // grounded prompt.
+    const geminiApiKey = getGeminiApiKey();
+    if (!lyrics && geminiApiKey) {
+      const videoId = ytmResult?.videoId ?? (await searchSong(data.title, data.artist))?.videoId;
+      if (myToken !== fetchToken) return;
+      if (videoId) {
+        logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...${staticFallback ? ` (grounded on ${staticFallback.source})` : ''}`);
+        try {
+          const result = await fetchGeminiTimedLyrics(
+            videoId,
+            geminiApiKey,
+            (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
+            data.durationMs,
+            data.title,
+            data.artist,
+            staticFallback?.static ?? null
+          );
+          if (myToken !== fetchToken) return;
+          if (result) {
+            if (result.correctedUnits) {
+              logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
+            }
+            if (result.droppedPastDuration) {
+              logger.log('[lyrics] gemini: dropped one or more lines timestamped past the song\'s known duration');
+            }
+            lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}${result.grounded ? `+${staticFallback.source}` : ''}` };
+          }
+        } catch (err) {
+          logger.log('[lyrics] gemini: all candidate models failed:', err?.message || err);
+        }
+      } else {
+        logger.log('[lyrics] gemini: no videoId to give it, skipping');
       }
     }
 

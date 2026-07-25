@@ -35,17 +35,33 @@ async function isVideoAvailable(videoId) {
   }
 }
 
-// Strips section headers ("[Chorus]", "(Verse 2)") and blank lines out of a
-// plain-text lyrics blob — those aren't actually sung, so asking Gemini to
-// time them as if they were a line would either produce a bogus timestamp or
-// tempt it to skip/renumber entries, throwing off the index-based mapping
-// splitKnownLyricsLines is used for in buildPrompt/parseGroundedTimedLyrics.
+// Bracket-free section labels: confirmed directly against LRCLIB's
+// plainLyrics for "Victim or Survivor" by Citizen Soldier, which spells out
+// "VERSE 1", "PRE-CHORUS 1", "CHORUS", "CHORUS 2", "BRIDGE", "CHORUS 3" as
+// bare all-caps lines with no brackets/parens at all — the bracket-only
+// filter below let all of those through as if they were real sung lines.
+// With them left in, Gemini was asked to find a timestamp for a label like
+// "CHORUS 3" that has no distinct sung text of its own (the actual words
+// only appear once, under the first "CHORUS"), which produced a bogus/
+// duplicated final timestamp block running to ~250s on a song that
+// LRCLIB (and SMTC) both agree is 175s long. Matched by keyword so this
+// only strips known section-label vocabulary, not any real lyric line that
+// happens to be short.
+const SECTION_LABEL_RE =
+  /^(?:intro|outro|verse|chorus|pre-chorus|post-chorus|bridge|hook|refrain|interlude|breakdown|instrumental)\s*\d*\.?:?$/i;
+
+// Strips section headers ("[Chorus]", "(Verse 2)", or bare "CHORUS 2") and
+// blank lines out of a plain-text lyrics blob — those aren't actually sung,
+// so asking Gemini to time them as if they were a line would either produce
+// a bogus timestamp or tempt it to skip/renumber entries, throwing off the
+// index-based mapping splitKnownLyricsLines is used for in
+// buildPrompt/parseGroundedTimedLyrics.
 function splitKnownLyricsLines(text) {
   if (!text) return [];
   return text
     .split('\n')
     .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !/^[[(].*[)\]]$/.test(l));
+    .filter((l) => l.length > 0 && !/^[[(].*[)\]]$/.test(l) && !SECTION_LABEL_RE.test(l));
 }
 
 function buildPrompt(title, artist, knownLines) {
@@ -175,6 +191,23 @@ function correctSecondsMistakenForMs(timed, durationMs) {
   return timed.map((l) => ({ ...l, timeMs: l.timeMs * 1000 }));
 }
 
+// Confirmed directly on a real (grounded) response for "Victim or Survivor"
+// by Citizen Soldier: LRCLIB and the track's own SMTC-reported duration both
+// agree the song is ~175s long, but the model repeated an entire bridge +
+// chorus block a second time near the end with timestamps stretching to
+// ~250s — 75s past the real ending. Grounding fixes *wording* (see
+// buildPrompt's grounded branch) but does nothing to stop the model from
+// still mistiming or duplicating a section against the video it's watching,
+// so anything landing well past the song's actual known length is dropped
+// outright rather than displayed — it's someone else's guess at "where would
+// this repeat happen" and cannot be correct if the real song has already
+// ended by then. A few seconds of slack covers a natural fade-out tail.
+function dropLinesPastKnownDuration(timed, durationMs) {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return timed;
+  const limit = durationMs + 5000;
+  return timed.filter((l) => l.timeMs <= limit);
+}
+
 // Returns { timed, model, correctedUnits } from whichever model worked
 // first, or null if the video has no usable lyrics (including: the video
 // itself is gone — checked up front, before spending a model call on it).
@@ -220,12 +253,21 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, ti
   if (!outcome) return null;
 
   const corrected = correctSecondsMistakenForMs(outcome.result, durationMs);
-  return { timed: corrected, model: outcome.model, correctedUnits: corrected !== outcome.result, grounded };
+  const trimmed = dropLinesPastKnownDuration(corrected, durationMs);
+  if (trimmed.length === 0) return null;
+  return {
+    timed: trimmed,
+    model: outcome.model,
+    correctedUnits: corrected !== outcome.result,
+    droppedPastDuration: trimmed.length !== corrected.length,
+    grounded,
+  };
 }
 
 module.exports = {
   fetchGeminiTimedLyrics,
   correctSecondsMistakenForMs,
+  dropLinesPastKnownDuration,
   parseTimedLyrics,
   parseGroundedTimedLyrics,
   splitKnownLyricsLines,

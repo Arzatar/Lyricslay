@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const {
   correctSecondsMistakenForMs,
+  dropLinesPastKnownDuration,
   parseTimedLyrics,
   parseGroundedTimedLyrics,
   splitKnownLyricsLines,
@@ -57,6 +58,33 @@ test('correctSecondsMistakenForMs does not misfire on a normal short song', () =
   assert.deepEqual(corrected, timed);
 });
 
+test('dropLinesPastKnownDuration drops a hallucinated tail block past the real song length', () => {
+  // Real case: a grounded response for "Victim or Survivor" (Citizen
+  // Soldier), a 175071ms track per both LRCLIB and SMTC, repeated an entire
+  // bridge+chorus block a second time with timestamps stretching to
+  // ~249678ms — 75s past the song's actual end.
+  const timed = [
+    { timeMs: 159398, text: 'I’m the survivor' },
+    { timeMs: 204368, text: 'I’m not I’m not I’m not the victim' },
+    { timeMs: 249678, text: 'Victim or survivor' },
+  ];
+  assert.deepEqual(dropLinesPastKnownDuration(timed, 175071), [{ timeMs: 159398, text: 'I’m the survivor' }]);
+});
+
+test('dropLinesPastKnownDuration keeps a natural fade-out tail within a few seconds of the known duration', () => {
+  const timed = [
+    { timeMs: 100000, text: 'a' },
+    { timeMs: 178000, text: 'b' },
+  ];
+  assert.deepEqual(dropLinesPastKnownDuration(timed, 175071), timed);
+});
+
+test('dropLinesPastKnownDuration is a no-op without a known duration', () => {
+  const timed = [{ timeMs: 999999, text: 'a' }];
+  assert.deepEqual(dropLinesPastKnownDuration(timed, null), timed);
+  assert.deepEqual(dropLinesPastKnownDuration(timed, 0), timed);
+});
+
 test('parseTimedLyrics parses a valid Gemini response into sorted timed lines', () => {
   const json = {
     candidates: [{ content: { parts: [{ text: '[{"timeMs":5000,"text":"b"},{"timeMs":1000,"text":"a"}]' }] } }],
@@ -80,6 +108,17 @@ test('parseTimedLyrics returns null for malformed JSON', () => {
 test('splitKnownLyricsLines strips blank lines and pure section markers', () => {
   const text = '[Chorus]\nHello world\n\n(Verse 2)\nGoodbye\n[Bridge] extra';
   assert.deepEqual(splitKnownLyricsLines(text), ['Hello world', 'Goodbye', '[Bridge] extra']);
+});
+
+test('splitKnownLyricsLines strips bracket-free section labels (LRCLIB style)', () => {
+  // Real case: LRCLIB's plainLyrics for "Victim or Survivor" by Citizen
+  // Soldier spells section headers as bare all-caps lines with no
+  // brackets/parens at all ("VERSE 1", "CHORUS 2", "BRIDGE"). Left in, these
+  // were handed to Gemini as if they were real numbered lyric lines needing
+  // a timestamp, which produced a bogus/duplicated timing block running
+  // well past the song's actual (LRCLIB- and SMTC-agreed) 175s duration.
+  const text = 'VERSE 1\nHello world\nPRE-CHORUS 1\nCHORUS\nGoodbye\nCHORUS 2\nBRIDGE\nCHORUS 3.\nOne more line';
+  assert.deepEqual(splitKnownLyricsLines(text), ['Hello world', 'Goodbye', 'One more line']);
 });
 
 test('splitKnownLyricsLines returns [] for empty/missing input', () => {
