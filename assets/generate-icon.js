@@ -1,12 +1,12 @@
 'use strict';
 // One-off script (plain Node, no deps) that writes assets/tray.png and
 // assets/icon.png: a circular black badge (transparent outside the circle,
-// no square background) with a glossy upper-left highlight, and a cyan
-// "synced lyric lines" glyph — three text-line bars with the middle one lit
-// up bright, mirroring what the app's own overlay does (highlighting the
-// currently active line). Picked over a generic music-note glyph
-// specifically because it communicates *what this app does* rather than
-// just "this is music-related".
+// no square background) ringed in cyan, with a glossy upper-left highlight,
+// and a cyan "synced lyric lines" glyph — three text-line bars with the
+// middle one lit up bright, mirroring what the app's own overlay does
+// (highlighting the currently active line). Picked over a generic
+// music-note glyph specifically because it communicates *what this app
+// does* rather than just "this is music-related".
 
 const fs = require('fs');
 const path = require('path');
@@ -90,19 +90,26 @@ function lyricLinesGlyph(x, y, cx, cy, size) {
   for (let i = 0; i < 3; i++) {
     const w = widths[i];
     if (roundedBarHit(x, y, cx - w / 2, ys[i], w, barH, barH / 2)) {
-      return i === 1 ? 1 : 0.55;
+      return i === 1 ? 1 : 0.8;
     }
   }
   return 0;
 }
 
 const CYAN = [0, 224, 255];
-const DIM_CYAN = [70, 150, 165];
+const DIM_CYAN = [125, 205, 225];
+const RING_CYAN = [0, 224, 255];
 
+// A cyan ring around the black circle — picked after a few rounds of live
+// preview iteration (thickness and the dim bars' opacity/color both went
+// through several passes checking actual rendered output before landing
+// here).
 function makeBadge(size) {
   const cx = size / 2;
   const cy = size / 2;
-  const r = size * 0.48;
+  const ringThickness = size * 0.045 * 0.8;
+  const outerR = size * 0.48;
+  const innerR = outerR - ringThickness;
   const highlightCx = size * 0.36;
   const highlightCy = size * 0.32;
   const highlightR = size * 0.55;
@@ -111,12 +118,22 @@ function makeBadge(size) {
     const dx = x - cx;
     const dy = y - cy;
     const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist > r) return [0, 0, 0, 0]; // transparent outside the circle
+    if (dist > outerR) return [0, 0, 0, 0]; // transparent outside the circle
 
-    // Glossy sphere shading: lighter near the highlight point, darker at the rim.
     const hDist = Math.sqrt((x - highlightCx) ** 2 + (y - highlightCy) ** 2) / highlightR;
     const glossT = Math.max(0, 1 - hDist);
-    const edgeT = Math.max(0, (dist / r - 0.75) / 0.25);
+
+    if (dist > innerR) {
+      // Cyan ring, with a touch of the same glossy highlight so it doesn't
+      // look like a flat decal.
+      const rr = Math.min(255, RING_CYAN[0] + 60 * glossT);
+      const rg = Math.min(255, RING_CYAN[1] + 30 * glossT);
+      const rb = Math.min(255, RING_CYAN[2] + 20 * glossT);
+      return [Math.round(rr), Math.round(rg), Math.round(rb), 255];
+    }
+
+    // Glossy sphere shading: lighter near the highlight point, darker at the rim.
+    const edgeT = Math.max(0, (dist / innerR - 0.75) / 0.25);
     const baseGray = lerp(18, 4, edgeT);
     const bg = [
       Math.round(lerp(baseGray, 46, glossT * 0.6)),
