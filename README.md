@@ -8,6 +8,8 @@ It watches whatever is currently playing on YouTube Music (browser tab,
 desktop app, or PWA) via Windows' native media session, looks up synced
 lyrics, and highlights the current line as the song plays.
 
+See [QUICKSTART.md](QUICKSTART.md) for the short version of this doc.
+
 ## Features
 
 - Runs as a system tray app — no taskbar window.
