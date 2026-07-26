@@ -103,11 +103,14 @@ const RING_CYAN = [0, 224, 255];
 // A cyan ring around the black circle — picked after a few rounds of live
 // preview iteration (thickness and the dim bars' opacity/color both went
 // through several passes checking actual rendered output before landing
-// here).
-function makeBadge(size) {
+// here). `ringMultiplier` lets the tray icon (32px) use a relatively
+// thicker ring than the base proportion gives — checked directly at that
+// shipped size: the ring at the same proportion as the 256px icon read as
+// too thin there.
+function makeBadge(size, ringMultiplier = 1) {
   const cx = size / 2;
   const cy = size / 2;
-  const ringThickness = size * 0.045 * 0.8;
+  const ringThickness = size * 0.045 * 0.8 * ringMultiplier;
   const outerR = size * 0.48;
   const innerR = outerR - ringThickness;
   const highlightCx = size * 0.36;
@@ -154,6 +157,6 @@ function makeBadge(size) {
 }
 
 const outDir = __dirname;
-fs.writeFileSync(path.join(outDir, 'tray.png'), makeBadge(32));
+fs.writeFileSync(path.join(outDir, 'tray.png'), makeBadge(32, 1.5));
 fs.writeFileSync(path.join(outDir, 'icon.png'), makeBadge(256));
 console.log('icons written to', outDir);
