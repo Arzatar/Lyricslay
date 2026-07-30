@@ -107,20 +107,26 @@ whatever's behind it and never blocks clicks to the app underneath, even while
 unlocked. "Locked" mode (`Ctrl+Alt+L`) makes it click-through *everywhere*,
 including that label, for when you want zero chance of it intercepting input.
 
-**Per-app position:** wherever you drag the overlay to is remembered
-separately for whatever app was in the foreground at the time — top-center
-for one game, off to the side for another, bottom-left while coding, etc.
-There's no explicit "save" step: dragging it while a given app is behind it
-*is* the save action, and switching back to that app later restores that
-exact spot automatically. An app you've never positioned it for just leaves
-the overlay wherever it already was until you drag it once. See
-`foregroundApp.ps1`/`foregroundApp.js`.
+**Per-app position (off by default):** tray menu → *Settings* → *Remember
+position per app* remembers a separate position for whatever app was in the
+foreground at the time — top-center for one game, off to the side for
+another, bottom-left while coding, etc. There's no explicit "save" step:
+dragging it while a given app is behind it *is* the save action, and
+switching back to that app later restores that exact spot automatically. An
+app you've never positioned it for just leaves the overlay wherever it
+already was until you drag it once. See `foregroundApp.ps1`/`foregroundApp.js`.
 
-Dragged it somewhere unreachable (off-screen, behind something) for a
-specific app? Tray menu → *Reset position* lists every app with a remembered
-position — the current one first, then every other one below — and clicking
-one clears just that app's saved spot (snapping the overlay back to
-top-center immediately if that's the app currently behind it).
+Leaving this off (the default) keeps things simple: the overlay has just one
+position, wherever you last dragged it, regardless of which app is focused.
+Turning it on doesn't lose anything from before — any per-app positions
+already remembered from a previous time this was on are still there and take
+effect immediately once you turn it back on.
+
+Dragged it somewhere unreachable (off-screen, behind something)? Tray menu →
+*Reset position* snaps it back to top-center — with per-app remembering on,
+it's a submenu listing every app with a remembered position (the current one
+first, then every other one below), so you can reset just one app's spot
+without affecting the rest.
 
 **Snapping to a spot:** tray menu → *Move to…* opens a small 3x3 grid —
 top-left through bottom-right — that mirrors the screen's own layout; click
@@ -149,7 +155,7 @@ bright pick.
 time that song plays. Tray menu → *Reset sync* zeroes it again.
 
 **Wrong or broken lyrics:** tray menu → *Re-search lyrics for this song* is a
-submenu with four options, all of which clear that song's
+submenu with five options, all of which clear that song's
 [cached](#lyrics-cache) entry and immediately re-run the lookup — useful when
 a source matched the wrong song, or returned something garbled/truncated,
 since the cache never expires on its own and a plain replay would just hit
@@ -165,6 +171,19 @@ that same bad entry again:
   (no static fallback either) — grayed out if no key is configured. Since
   it's already the last real attempt in the automatic chain, picking it
   explicitly means "just the AI, or nothing."
+- **Search manually (enter title/artist)…** — for when the *detected*
+  title/artist is itself the problem (a re-uploader's channel name as
+  "artist", a completely different song matched by mistake, …) rather than
+  any particular source being at fault. Opens a small window prefilled with
+  the detected title and artist — type the correct one(s) and press Enter
+  (Enter in the title field moves to the artist field; Enter in the artist
+  field searches — no clicking required) to search with what you typed. The
+  result is still cached under the song Windows actually reports, so it's
+  found automatically the next time that song plays, with no need to search
+  manually again. If the song changes while this window is still open, what
+  you eventually submit is searched and cached for the song that was playing
+  when you opened it, not whatever's playing by the time you hit search —
+  the new song keeps following its own normal detection, untouched.
 
 **Start with Windows:** tray menu → *Enable start with Windows* launches the
 app automatically at login; the same item switches to *Disable* once it's on.
@@ -304,10 +323,15 @@ src/
   renderer/positionPicker.html, The 3x3 anchor-grid popover's UI — click a
     positionPicker.css,       cell, overlay snaps there (see anchoredBounds
     positionPicker.js         in utils.js)
+  manual-search-preload.js  IPC bridge for the "Search manually…" window
+  renderer/manualSearch.html, The manual-search window's UI: title/artist
+    manualSearch.css,          inputs, Enter-to-advance/search, no mouse
+    manualSearch.js            required
   textMatch.js           Shared fuzzy title/artist matching (used by ytmusic.js,
                           lrclib.js, and genius.js to pick the best search result)
   utils.js                Small pure helpers (track identity key, window placement,
-                          settings-cycling, top-left-anchored resize math)
+                          settings-cycling, top-left-anchored resize math,
+                          manual-search query resolution)
   renderer/
     index.html, style.css, renderer.js   The overlay's UI
     lyricsSync.js          Pure playback-position → active-line logic, shared

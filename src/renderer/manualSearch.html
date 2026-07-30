@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Search Lyrics Manually</title>
+    <link rel="stylesheet" href="manualSearch.css" />
+  </head>
+  <body>
+    <h1>Search lyrics manually</h1>
+    <p class="hint">
+      Use this when the detected title/artist is wrong, or a source matched a
+      different version — type the correct song and artist to search with.
+      The result is still cached under the song currently playing, so it's
+      found automatically next time it plays.
+    </p>
+    <label for="title-input">Song title</label>
+    <input type="text" id="title-input" autocomplete="off" spellcheck="false" />
+    <label for="artist-input">Artist</label>
+    <input type="text" id="artist-input" autocomplete="off" spellcheck="false" />
+    <p id="status" class="status">Type, press Enter to move to the next field or search.</p>
+    <div class="actions">
+      <button id="cancel-btn">Cancel</button>
+      <button id="search-btn">Search</button>
+    </div>
+    <script src="manualSearch.js"></script>
+  </body>
+</html>

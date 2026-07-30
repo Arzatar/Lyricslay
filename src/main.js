@@ -31,6 +31,7 @@ const {
   anchoredBounds: computeAnchoredBounds,
   cycleValue,
   resizeKeepingTopLeftAnchored,
+  resolveSearchQuery,
 } = require('./utils');
 
 const VISIBLE_LINES_OPTIONS = [1, 3, 5];
@@ -66,6 +67,15 @@ const store = new Store({
     // applyDesiredSize), not something each app should remember its own copy
     // of. `bounds` above stays the fallback for apps with no entry here yet.
     perAppBounds: {},
+    // Off by default so upgrading an existing install never silently changes
+    // behavior: with this off, the overlay always uses the single global
+    // position (the flat `bounds` above) regardless of which app is focused —
+    // the same as "an app with no perAppBounds entry yet" already behaves
+    // today. Neither saveBounds() nor applyForegroundApp() touch perAppBounds
+    // at all while this is off, so existing users' saved per-app positions are
+    // never cleared by it either way — turning it back on picks up exactly
+    // where it left off instead of needing every app repositioned again.
+    perAppPositionEnabled: false,
     fontSize: 22,
     opacity: 0.92,
     locked: false, // locked = click-through; unlocked lets you drag the overlay anywhere
@@ -133,6 +143,12 @@ let lastVerificationUrl = null;
 let shortcutsWin = null;
 let positionPickerWin = null;
 let geminiKeyWin = null;
+let manualSearchWin = null;
+// The {title, artist} that was actually playing when "Search manually…" was
+// opened — captured once, there, rather than re-read at submit time. See
+// runManualSearch's comment for why this matters if the song changes while
+// the window is still open.
+let manualSearchPinnedTrack = null;
 // Last height the renderer asked for via 'set-desired-height' — kept around so
 // applyDesiredSize() can be re-run from win's 'moved' event (e.g. dragged to a
 // different-sized monitor) without needing the renderer to resend it.
@@ -261,6 +277,36 @@ function resetPositionSubmenu() {
   return items;
 }
 
+// The single global position (the flat `bounds` store key) is all there is to
+// reset while "Remember position per app" is off — same top-center snap as
+// the per-app version above, just with no perAppBounds entry involved.
+function resetGlobalPosition() {
+  if (!win || win.isDestroyed()) return;
+  const current = win.getBounds();
+  const tc = computeAnchoredBounds('top-center', screen.getPrimaryDisplay().workArea, {
+    width: current.width,
+    height: current.height,
+  });
+  win.setPosition(tc.x, tc.y);
+}
+
+// Flips the "Remember position per app" setting (see the perAppPositionEnabled
+// store default for what turning it off/on actually changes). Never clears
+// perAppBounds either way — it just stops being read/written while off — so
+// re-enabling it later picks back up exactly where it left off instead of
+// needing every app repositioned again.
+function togglePerAppPosition() {
+  const next = !store.get('perAppPositionEnabled');
+  store.set('perAppPositionEnabled', next);
+  // Snap immediately to whatever's already saved for the app currently behind
+  // the overlay, rather than waiting for the next app switch to notice.
+  if (next && currentForegroundApp && win && !win.isDestroyed()) {
+    const saved = store.get('perAppBounds')[currentForegroundApp];
+    if (saved) win.setPosition(saved.x, saved.y);
+  }
+  updateTrayMenu();
+}
+
 function createWindow() {
   const savedBounds = store.get('bounds');
   const bounds = savedBounds && Number.isFinite(savedBounds.x) && Number.isFinite(savedBounds.y)
@@ -367,7 +413,7 @@ function saveBounds() {
   // contain a literal "." (e.g. Warframe's is "Warframe.x64") — dot-path
   // would silently split that into a nested perAppBounds.Warframe.x64
   // instead of one perAppBounds["Warframe.x64"] entry.
-  if (currentForegroundApp) {
+  if (store.get('perAppPositionEnabled') && currentForegroundApp) {
     const perApp = store.get('perAppBounds');
     store.set('perAppBounds', { ...perApp, [currentForegroundApp]: { x: bounds.x, y: bounds.y } });
   }
@@ -382,6 +428,7 @@ function saveBounds() {
 function applyForegroundApp(processName) {
   if (!processName || processName === OWN_PROCESS_NAME || processName === SHELL_PROCESS_NAME) return;
   currentForegroundApp = processName;
+  if (!store.get('perAppPositionEnabled')) return;
   const saved = store.get('perAppBounds')[processName];
   if (saved && win && !win.isDestroyed()) {
     win.setPosition(saved.x, saved.y);
@@ -617,6 +664,17 @@ function updateTrayMenu() {
           label: store.get('showRomaji') ? 'Show original (hide romaji)' : 'Show romaji for Japanese lyrics',
           click: toggleShowRomaji,
         },
+        { type: 'separator' },
+        {
+          // Off by default (see the perAppPositionEnabled store default) —
+          // turning this on switches from one single global position to
+          // remembering a separate spot per foreground app (see
+          // ARCHITECTURE.md's "Per-app remembered position" section).
+          label: 'Remember position per app',
+          type: 'checkbox',
+          checked: store.get('perAppPositionEnabled'),
+          click: togglePerAppPosition,
+        },
       ],
     },
     {
@@ -647,6 +705,16 @@ function updateTrayMenu() {
           enabled: !!getGeminiApiKey(),
           click: () => retryLyrics('gemini'),
         },
+        { type: 'separator' },
+        {
+          // For when the detected title/artist itself is the problem (a
+          // re-uploader's channel name as "artist", a different version
+          // matched by mistake, ...) rather than any particular source —
+          // type the correct pair to search with instead of picking which
+          // source(s) to retry against the same (wrong) detected metadata.
+          label: 'Search manually (enter title/artist)…',
+          click: openManualSearchWindow,
+        },
       ],
     },
     { type: 'separator' },
@@ -654,10 +722,9 @@ function updateTrayMenu() {
       label: 'Move to…',
       click: openPositionPicker,
     },
-    {
-      label: 'Reset position',
-      submenu: resetPositionSubmenu(),
-    },
+    store.get('perAppPositionEnabled')
+      ? { label: 'Reset position', submenu: resetPositionSubmenu() }
+      : { label: 'Reset position', click: resetGlobalPosition },
     { type: 'separator' },
     {
       label: `${startWithWindowsEnabled() ? 'Disable' : 'Enable'} start with Windows`,
@@ -863,6 +930,42 @@ function openGeminiKeySettings() {
   });
 }
 
+function createManualSearchWindow() {
+  const w = new BrowserWindow({
+    width: 420,
+    height: 380,
+    parent: win,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: 'Search Lyrics Manually',
+    webPreferences: {
+      preload: path.join(__dirname, 'manual-search-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  w.setMenuBarVisibility(false);
+  w.loadFile(path.join(__dirname, 'renderer', 'manualSearch.html'));
+  return w;
+}
+
+function openManualSearchWindow() {
+  if (manualSearchWin && !manualSearchWin.isDestroyed()) {
+    manualSearchWin.focus();
+    return;
+  }
+  if (!lastTrackData?.title) return; // tray item is disabled in this case anyway
+  // Captured here, once — see manualSearchPinnedTrack's declaration and
+  // runManualSearch's comment for why this can't just be read fresh at submit
+  // time instead.
+  manualSearchPinnedTrack = { title: lastTrackData.title, artist: lastTrackData.artist };
+  manualSearchWin = createManualSearchWindow();
+  manualSearchWin.on('closed', () => {
+    manualSearchWin = null;
+  });
+}
+
 // A visual 3x3 anchor grid (see renderer/positionPicker.html) — clicking a
 // cell moves the overlay straight to that spot, matching the "top-left,
 // top-center, ..., bottom-right" grid this mirrors 1:1 (see anchoredBounds
@@ -1003,6 +1106,264 @@ function toggleShowRomaji() {
   }
 }
 
+// The actual lyrics-fallback-chain lookup (steps 1-6 from ARCHITECTURE.md),
+// extracted out of handleTrackTick so it can also be driven by manual search
+// (see runManualSearch below) with a *different* title/artist to search with
+// than whatever it ultimately gets cached/displayed under. Never touches the
+// cache or any shared now-playing state itself — callers own that, each
+// deciding for themselves what "stale" means via `isStale()` (handleTrackTick
+// ties it to fetchToken exactly as before; a background manual search for a
+// song that's no longer playing passes one that never trips, since nothing
+// here is shared state for it to race against). Returns the resolved lyrics
+// object (never null on a normal, non-stale completion — falls all the way
+// through to `{ timed: null, static: null, source: 'none' }`), or exactly
+// `null` if `isStale()` ever comes back true mid-lookup.
+async function fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, isStale }) {
+  const durationSec = Number.isFinite(durationMs) && durationMs > 0 ? durationMs / 1000 : null;
+  logger.log(`[lyrics] searching as "${searchTitle}" — "${searchArtist}" (durationSec=${durationSec}, authed=${!!ytmAuth})`);
+
+  // Timed lyrics are the only thing that satisfies the chain; a source
+  // returning only plain/static text no longer stops the search, it just
+  // gets kept as `staticFallback` in case *nothing* ever produces timed
+  // lyrics, tried dead last instead of accepted on the spot.
+  // ytmResult/videoId gets threaded through every step so the AI fallback
+  // can reuse whichever YT Music search already resolved a videoId,
+  // without a redundant extra search call.
+  let lyrics = null;
+  let ytmResult = null;
+  let staticFallback = null; // { static, source } — last resort only
+
+  // Step 1: YT Music, authenticated — timed only.
+  if ((mode === 'auto' || mode === 'youtube') && ytmAuth) {
+    let authHeaders = null;
+    try {
+      const accessToken = await ytmAuthModule.getValidAccessToken(ytmAuth);
+      authHeaders = ytmAuthModule.buildAuthHeaders(accessToken);
+    } catch (err) {
+      // The refresh token itself got revoked/expired server-side — this is
+      // the only case that should actually sign the user out.
+      logger.log('[lyrics] ytmusic-timed-auth: refresh failed, signing out:', err?.message || err);
+      ytmAuth = null;
+      updateTrayMenu();
+    }
+    if (authHeaders) {
+      try {
+        ytmResult = await fetchLyricsForTrack(searchTitle, searchArtist, authHeaders);
+        if (isStale()) return null;
+        if (ytmResult?.timed) {
+          lyrics = { timed: ytmResult.timed, static: null, source: 'ytmusic-timed-auth' };
+          logger.log(`[lyrics] ytmusic-timed-auth: hit (${ytmResult.timed.length} lines)`);
+        } else {
+          logger.log(`[lyrics] ytmusic-timed-auth: no timed lyrics (static=${!!ytmResult?.static})`);
+          if (ytmResult?.static && !staticFallback) {
+            staticFallback = { static: ytmResult.static, source: 'ytmusic-static-auth' };
+          }
+        }
+      } catch (err) {
+        // A single request in the lookup (search/browse) failed — the
+        // token itself is still fine, so stay signed in and just fall
+        // back to the unauthenticated sources below for this track.
+        logger.log('[lyrics] ytmusic-timed-auth: request failed, falling back unauthenticated:', err?.message || err);
+        ytmResult = null;
+      }
+    }
+  }
+
+  // Step 2: LRCLIB — timed only.
+  if (!lyrics && (mode === 'auto' || mode === 'api')) {
+    const synced = await fetchSyncedLyrics(searchTitle, searchArtist, durationSec);
+    if (isStale()) return null;
+    if (synced?.timed) {
+      lyrics = { timed: synced.timed, static: null, source: 'lrclib-synced' };
+      logger.log(`[lyrics] lrclib: hit, timed (${synced.timed.length} lines)`);
+    } else {
+      if (synced?.plain && !staticFallback) {
+        staticFallback = { static: synced.plain, source: 'lrclib-plain' };
+      }
+      logger.log(`[lyrics] lrclib: no timed match (plain=${!!synced?.plain})`);
+    }
+  }
+
+  // Step 3: YT Music again, unauthenticated this time — still timed only.
+  // In practice YT Music's timed-lyrics renderer only ever responds to
+  // authenticated requests (see ARCHITECTURE.md), so this realistically
+  // never hits — kept anyway since it's cheap (reuses step 1's result
+  // when we have one) and costs nothing to check.
+  if (!lyrics && (mode === 'auto' || mode === 'youtube')) {
+    const fallback = ytmResult ?? (await fetchLyricsForTrack(searchTitle, searchArtist));
+    if (isStale()) return null;
+    ytmResult = ytmResult ?? fallback; // keep the videoId around for the AI step below
+    if (fallback?.timed) {
+      lyrics = { timed: fallback.timed, static: null, source: 'ytmusic-timed-unauth' };
+      logger.log(`[lyrics] ytmusic-timed-unauth: hit (${fallback.timed.length} lines)`);
+    } else {
+      if (fallback?.static && !staticFallback) {
+        staticFallback = { static: fallback.static, source: 'ytmusic-static' };
+      }
+      logger.log(`[lyrics] ytmusic-timed-unauth: no timed match (static=${!!fallback?.static})`);
+    }
+  }
+
+  // Step 4 (TODO, not implemented in this prototype): another free
+  // timed-lyrics source beyond LRCLIB/YT Music — NetEase Cloud Music's
+  // public API was the obvious candidate (used by other open-source lyrics
+  // tools) but its search/lyric endpoints now require its own AES+RSA
+  // request-encryption scheme, not a plain keyless GET as assumed; skipped
+  // for now rather than half-implementing crypto plumbing in a prototype.
+
+  // Steps 5a/5b: the remaining plain-text-only sources, tried *before*
+  // Gemini now (moved up from the tail end of the chain) so that a
+  // wording-only hit from either of them is also available to ground
+  // Gemini's timing pass below, instead of only ever being used as a
+  // last-resort static display after Gemini already ran blind. Skipped
+  // entirely in 'gemini' mode — picking Gemini explicitly means only the
+  // AI, no static fallback of any kind, since it's already the last real
+  // attempt in the normal chain.
+  if (!lyrics && !staticFallback && mode !== 'gemini') {
+    try {
+      const ovh = await lyricsOvh.fetchLyrics(searchTitle, searchArtist);
+      if (isStale()) return null;
+      if (ovh?.plain) {
+        staticFallback = { static: ovh.plain, source: 'lyricsovh-plain' };
+        logger.log('[lyrics] lyricsovh: hit');
+      } else {
+        logger.log('[lyrics] lyricsovh: no match');
+      }
+    } catch (err) {
+      logger.log('[lyrics] lyricsovh: request failed:', err?.message || err);
+    }
+  }
+
+  if (!lyrics && !staticFallback && mode !== 'gemini') {
+    try {
+      const scraped = await genius.fetchLyrics(searchTitle, searchArtist);
+      if (isStale()) return null;
+      if (scraped?.plain) {
+        staticFallback = { static: scraped.plain, source: 'genius-scraped' };
+        logger.log('[lyrics] genius: hit');
+      } else {
+        logger.log('[lyrics] genius: no match');
+      }
+    } catch (err) {
+      logger.log('[lyrics] genius: request failed:', err?.message || err);
+    }
+  }
+
+  // Step 6: last resort — ask Gemini to time the song's lyrics against its
+  // YouTube video (no audio capture on our end; Gemini's API can ingest a
+  // YouTube URL as input). Only runs if nothing above found *timed*
+  // lyrics. If a staticFallback was already captured by any source above
+  // (a database source got the wording right but had no timing), it's
+  // handed to Gemini as grounding so it only has to time known-correct
+  // lines instead of transcribing the song blind — see geminiLyrics.js's
+  // grounded prompt.
+  const geminiApiKey = getGeminiApiKey();
+  if (!lyrics && geminiApiKey) {
+    const videoId = ytmResult?.videoId ?? (await searchSong(searchTitle, searchArtist))?.videoId;
+    if (isStale()) return null;
+    if (videoId) {
+      logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...${staticFallback ? ` (grounded on ${staticFallback.source})` : ''}`);
+      try {
+        const result = await fetchGeminiTimedLyrics(
+          videoId,
+          geminiApiKey,
+          (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
+          durationMs,
+          searchTitle,
+          searchArtist,
+          staticFallback?.static ?? null
+        );
+        if (isStale()) return null;
+        if (result) {
+          if (result.correctedUnits) {
+            logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
+          }
+          if (result.droppedPastDuration) {
+            logger.log('[lyrics] gemini: dropped one or more lines timestamped past the song\'s known duration');
+          }
+          lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}${result.grounded ? `+${staticFallback.source}` : ''}` };
+        }
+      } catch (err) {
+        logger.log('[lyrics] gemini: all candidate models failed:', err?.message || err);
+      }
+    } else {
+      logger.log('[lyrics] gemini: no videoId to give it, skipping');
+    }
+  }
+
+  if (!lyrics && staticFallback) {
+    logger.log(`[lyrics] falling back to static-only result from ${staticFallback.source} (no timed lyrics found anywhere, including AI)`);
+    lyrics = { timed: null, static: staticFallback.static, source: staticFallback.source };
+  }
+
+  if (!lyrics) {
+    lyrics = { timed: null, static: null, source: 'none' };
+  }
+
+  logger.log(`[lyrics] result: source=${lyrics.source} ${lyrics.timed ? '(timed)' : lyrics.static ? '(static)' : '(none)'}`);
+  return lyrics;
+}
+
+// Deletes the current song's cached (wrong) entry and re-runs the lookup using
+// `typedTitle`/`typedArtist` as the actual search query instead of whatever
+// Windows reported — for when the *detected metadata itself* is the problem
+// (a re-uploader's channel name as "artist", a title padded with junk, a
+// completely different song matched by mistake), rather than any particular
+// source being at fault. The result is still cached under `pinnedTrack`'s real
+// title/artist (see resolveSearchQuery in utils.js) — the one Windows was
+// actually reporting when "Search manually…" was opened — so the *next* time
+// this exact song plays, the corrected lyrics are simply what's already cached.
+//
+// `pinnedTrack` is captured once, when the search window opens (see
+// openManualSearchWindow), not re-read here at submit time: if the user takes
+// a while to type and a different song starts playing in the meantime, this
+// still searches/caches for the song that was playing when they opened the
+// window, and never touches whatever's actually on screen for the *new* song —
+// that keeps following its own normal detection, completely unaffected. Only
+// when `pinnedTrack` is still the song actually playing right now does this
+// touch the live loading state / fetchToken / displayed lyrics at all; a stale
+// pinned track runs purely as a silent cache warm-up for next time.
+async function runManualSearch(pinnedTrack, typedTitle, typedArtist) {
+  if (!lyricsCache) return;
+  const { title: realTitle, artist: realArtist } = pinnedTrack;
+  const { searchTitle, searchArtist } = resolveSearchQuery(pinnedTrack, { title: typedTitle, artist: typedArtist });
+
+  logger.log(
+    `[lyrics] manual search requested: searching as "${searchTitle}" — "${searchArtist}" ` +
+    `(caching under "${realTitle}" — "${realArtist}")`
+  );
+  lyricsCache.delete(realTitle, realArtist);
+
+  const pinnedKey = trackKeyFor(realTitle, realArtist);
+  const isLive = pinnedKey === currentTrackKey;
+  const myToken = isLive ? ++fetchToken : null;
+  if (isLive) win?.webContents.send('lyrics-loading', { title: realTitle, artist: realArtist });
+
+  try {
+    const lyrics = await fetchLyricsChain({
+      searchTitle,
+      searchArtist,
+      durationMs: isLive ? lastTrackData?.durationMs : null,
+      mode: 'auto',
+      isStale: () => isLive && myToken !== fetchToken,
+    });
+    if (lyrics === null) return; // stale: a real track change has since taken over
+
+    lyricsCache.set(realTitle, realArtist, lyrics);
+    if (!isLive) return; // background cache warm-up only — nothing on screen to update
+
+    currentLyrics = lyricsCache.get(realTitle, realArtist) ?? lyrics;
+    win?.webContents.send('lyrics-result', { title: realTitle, artist: realArtist, lyrics: lyricsForDisplay(currentLyrics) });
+    maybeBackfillRomaji(realTitle, realArtist, currentLyrics);
+  } catch (err) {
+    if (isLive && myToken !== fetchToken) return;
+    logger.log('[lyrics] manual search lookup threw:', err?.stack || err?.message || err);
+    if (isLive) {
+      win?.webContents.send('lyrics-result', { title: realTitle, artist: realArtist, lyrics: null, error: String(err?.message || err) });
+    }
+  }
+}
+
 // mode picks which primary source(s) "Re-search lyrics for this song" starts
 // from, each keeping its own natural downstream fallback tail:
 //   'auto'    - the full default chain, unchanged (YT auth -> LRCLIB -> YT
@@ -1067,190 +1428,15 @@ async function handleTrackTick(data, mode = 'auto') {
   win?.webContents.send('lyrics-loading', { title: data.title, artist: data.artist });
 
   try {
-    const durationSec = Number.isFinite(data.durationMs) && data.durationMs > 0
-      ? data.durationMs / 1000
-      : null;
-    logger.log(`[lyrics] cache miss, searching (durationSec=${durationSec}, authed=${!!ytmAuth})`);
+    const lyrics = await fetchLyricsChain({
+      searchTitle: data.title,
+      searchArtist: data.artist,
+      durationMs: data.durationMs,
+      mode,
+      isStale: () => myToken !== fetchToken,
+    });
+    if (lyrics === null) return; // stale: a newer track/fetch has since taken over
 
-    // Timed lyrics are the only thing that satisfies the chain; a source
-    // returning only plain/static text no longer stops the search, it just
-    // gets kept as `staticFallback` in case *nothing* ever produces timed
-    // lyrics, tried dead last instead of accepted on the spot.
-    // ytmResult/videoId gets threaded through every step so the AI fallback
-    // can reuse whichever YT Music search already resolved a videoId,
-    // without a redundant extra search call.
-    let lyrics = null;
-    let ytmResult = null;
-    let staticFallback = null; // { static, source } — last resort only
-
-    // Step 1: YT Music, authenticated — timed only.
-    if ((mode === 'auto' || mode === 'youtube') && ytmAuth) {
-      let authHeaders = null;
-      try {
-        const accessToken = await ytmAuthModule.getValidAccessToken(ytmAuth);
-        authHeaders = ytmAuthModule.buildAuthHeaders(accessToken);
-      } catch (err) {
-        // The refresh token itself got revoked/expired server-side — this is
-        // the only case that should actually sign the user out.
-        logger.log('[lyrics] ytmusic-timed-auth: refresh failed, signing out:', err?.message || err);
-        ytmAuth = null;
-        updateTrayMenu();
-      }
-      if (authHeaders) {
-        try {
-          ytmResult = await fetchLyricsForTrack(data.title, data.artist, authHeaders);
-          if (myToken !== fetchToken) return;
-          if (ytmResult?.timed) {
-            lyrics = { timed: ytmResult.timed, static: null, source: 'ytmusic-timed-auth' };
-            logger.log(`[lyrics] ytmusic-timed-auth: hit (${ytmResult.timed.length} lines)`);
-          } else {
-            logger.log(`[lyrics] ytmusic-timed-auth: no timed lyrics (static=${!!ytmResult?.static})`);
-            if (ytmResult?.static && !staticFallback) {
-              staticFallback = { static: ytmResult.static, source: 'ytmusic-static-auth' };
-            }
-          }
-        } catch (err) {
-          // A single request in the lookup (search/browse) failed — the
-          // token itself is still fine, so stay signed in and just fall
-          // back to the unauthenticated sources below for this track.
-          logger.log('[lyrics] ytmusic-timed-auth: request failed, falling back unauthenticated:', err?.message || err);
-          ytmResult = null;
-        }
-      }
-    }
-
-    // Step 2: LRCLIB — timed only.
-    if (!lyrics && (mode === 'auto' || mode === 'api')) {
-      const synced = await fetchSyncedLyrics(data.title, data.artist, durationSec);
-      if (myToken !== fetchToken) return;
-      if (synced?.timed) {
-        lyrics = { timed: synced.timed, static: null, source: 'lrclib-synced' };
-        logger.log(`[lyrics] lrclib: hit, timed (${synced.timed.length} lines)`);
-      } else {
-        if (synced?.plain && !staticFallback) {
-          staticFallback = { static: synced.plain, source: 'lrclib-plain' };
-        }
-        logger.log(`[lyrics] lrclib: no timed match (plain=${!!synced?.plain})`);
-      }
-    }
-
-    // Step 3: YT Music again, unauthenticated this time — still timed only.
-    // In practice YT Music's timed-lyrics renderer only ever responds to
-    // authenticated requests (see ARCHITECTURE.md), so this realistically
-    // never hits — kept anyway since it's cheap (reuses step 1's result
-    // when we have one) and costs nothing to check.
-    if (!lyrics && (mode === 'auto' || mode === 'youtube')) {
-      const fallback = ytmResult ?? (await fetchLyricsForTrack(data.title, data.artist));
-      if (myToken !== fetchToken) return;
-      ytmResult = ytmResult ?? fallback; // keep the videoId around for the AI step below
-      if (fallback?.timed) {
-        lyrics = { timed: fallback.timed, static: null, source: 'ytmusic-timed-unauth' };
-        logger.log(`[lyrics] ytmusic-timed-unauth: hit (${fallback.timed.length} lines)`);
-      } else {
-        if (fallback?.static && !staticFallback) {
-          staticFallback = { static: fallback.static, source: 'ytmusic-static' };
-        }
-        logger.log(`[lyrics] ytmusic-timed-unauth: no timed match (static=${!!fallback?.static})`);
-      }
-    }
-
-    // Step 4 (TODO, not implemented in this prototype): another free
-    // timed-lyrics source beyond LRCLIB/YT Music — NetEase Cloud Music's
-    // public API was the obvious candidate (used by other open-source lyrics
-    // tools) but its search/lyric endpoints now require its own AES+RSA
-    // request-encryption scheme, not a plain keyless GET as assumed; skipped
-    // for now rather than half-implementing crypto plumbing in a prototype.
-
-    // Steps 5a/5b: the remaining plain-text-only sources, tried *before*
-    // Gemini now (moved up from the tail end of the chain) so that a
-    // wording-only hit from either of them is also available to ground
-    // Gemini's timing pass below, instead of only ever being used as a
-    // last-resort static display after Gemini already ran blind. Skipped
-    // entirely in 'gemini' mode — picking Gemini explicitly means only the
-    // AI, no static fallback of any kind, since it's already the last real
-    // attempt in the normal chain.
-    if (!lyrics && !staticFallback && mode !== 'gemini') {
-      try {
-        const ovh = await lyricsOvh.fetchLyrics(data.title, data.artist);
-        if (myToken !== fetchToken) return;
-        if (ovh?.plain) {
-          staticFallback = { static: ovh.plain, source: 'lyricsovh-plain' };
-          logger.log('[lyrics] lyricsovh: hit');
-        } else {
-          logger.log('[lyrics] lyricsovh: no match');
-        }
-      } catch (err) {
-        logger.log('[lyrics] lyricsovh: request failed:', err?.message || err);
-      }
-    }
-
-    if (!lyrics && !staticFallback && mode !== 'gemini') {
-      try {
-        const scraped = await genius.fetchLyrics(data.title, data.artist);
-        if (myToken !== fetchToken) return;
-        if (scraped?.plain) {
-          staticFallback = { static: scraped.plain, source: 'genius-scraped' };
-          logger.log('[lyrics] genius: hit');
-        } else {
-          logger.log('[lyrics] genius: no match');
-        }
-      } catch (err) {
-        logger.log('[lyrics] genius: request failed:', err?.message || err);
-      }
-    }
-
-    // Step 6: last resort — ask Gemini to time the song's lyrics against its
-    // YouTube video (no audio capture on our end; Gemini's API can ingest a
-    // YouTube URL as input). Only runs if nothing above found *timed*
-    // lyrics. If a staticFallback was already captured by any source above
-    // (a database source got the wording right but had no timing), it's
-    // handed to Gemini as grounding so it only has to time known-correct
-    // lines instead of transcribing the song blind — see geminiLyrics.js's
-    // grounded prompt.
-    const geminiApiKey = getGeminiApiKey();
-    if (!lyrics && geminiApiKey) {
-      const videoId = ytmResult?.videoId ?? (await searchSong(data.title, data.artist))?.videoId;
-      if (myToken !== fetchToken) return;
-      if (videoId) {
-        logger.log(`[lyrics] gemini: asking about youtube video ${videoId}...${staticFallback ? ` (grounded on ${staticFallback.source})` : ''}`);
-        try {
-          const result = await fetchGeminiTimedLyrics(
-            videoId,
-            geminiApiKey,
-            (model, outcome) => logger.log(`[lyrics] gemini (${model}): ${outcome}`),
-            data.durationMs,
-            data.title,
-            data.artist,
-            staticFallback?.static ?? null
-          );
-          if (myToken !== fetchToken) return;
-          if (result) {
-            if (result.correctedUnits) {
-              logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
-            }
-            if (result.droppedPastDuration) {
-              logger.log('[lyrics] gemini: dropped one or more lines timestamped past the song\'s known duration');
-            }
-            lyrics = { timed: result.timed, static: null, source: `gemini-ai:${result.model}${result.grounded ? `+${staticFallback.source}` : ''}` };
-          }
-        } catch (err) {
-          logger.log('[lyrics] gemini: all candidate models failed:', err?.message || err);
-        }
-      } else {
-        logger.log('[lyrics] gemini: no videoId to give it, skipping');
-      }
-    }
-
-    if (!lyrics && staticFallback) {
-      logger.log(`[lyrics] falling back to static-only result from ${staticFallback.source} (no timed lyrics found anywhere, including AI)`);
-      lyrics = { timed: null, static: staticFallback.static, source: staticFallback.source };
-    }
-
-    if (!lyrics) {
-      lyrics = { timed: null, static: null, source: 'none' };
-    }
-
-    logger.log(`[lyrics] result: source=${lyrics.source} ${lyrics.timed ? '(timed)' : lyrics.static ? '(static)' : '(none)'}`);
     lyricsCache?.set(data.title, data.artist, lyrics);
     // Re-read from the cache rather than using `lyrics` as-is so the renderer gets
     // the canonical stored shape — specifically offsetMs, which set() defaults to 0
@@ -1398,6 +1584,22 @@ ipcMain.on('gemini-key-open-page', () => {
 
 ipcMain.on('gemini-key-close', () => {
   if (geminiKeyWin && !geminiKeyWin.isDestroyed()) geminiKeyWin.close();
+});
+
+ipcMain.handle('manual-search-get-prefill', () => ({
+  title: manualSearchPinnedTrack?.title ?? '',
+  artist: manualSearchPinnedTrack?.artist ?? '',
+}));
+
+ipcMain.on('manual-search-submit', (_e, { title, artist } = {}) => {
+  if (typeof title === 'string' && title.trim() && manualSearchPinnedTrack) {
+    runManualSearch(manualSearchPinnedTrack, title, typeof artist === 'string' ? artist : '');
+  }
+  if (manualSearchWin && !manualSearchWin.isDestroyed()) manualSearchWin.close();
+});
+
+ipcMain.on('manual-search-close', () => {
+  if (manualSearchWin && !manualSearchWin.isDestroyed()) manualSearchWin.close();
 });
 
 ipcMain.on('login-close', () => {

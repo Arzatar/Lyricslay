@@ -100,6 +100,23 @@ with bracket access (`perApp[processName]`) rather than electron-store's
 contain a literal `.` (`Warframe.x64`), which dot-path would otherwise split
 into a nested key instead of one flat entry.
 
+**Off by default (`perAppPositionEnabled`).** All of the above only actually
+runs while tray menu → *Settings* → *Remember position per app* is on — off
+(the default, including for anyone upgrading from a version before this
+setting existed) is a deliberate no-op path: `saveBounds()` skips writing to
+`perAppBounds` entirely, and `applyForegroundApp()` returns immediately after
+updating `currentForegroundApp` (still tracked, just not acted on) without
+ever reading `perAppBounds` or moving the window. The overlay then behaves
+exactly like "an app with no perAppBounds entry" always has — one position,
+the flat `bounds`, regardless of which app is focused. Crucially, neither
+function ever *deletes* `perAppBounds` — turning the setting off never
+touches an existing install's already-remembered positions, and turning it
+back on (`togglePerAppPosition()`) immediately re-applies whatever's saved for
+the app currently behind the overlay, rather than waiting for the next app
+switch to notice. This is what makes the setting safe to ship defaulted off:
+upgrading an existing install changes nothing until the user opts in, and
+opting in doesn't need every app repositioned again from scratch.
+
 ## Cleaning up third-party re-upload metadata (`trackMetadata.js`)
 
 SMTC reports whatever the page's `MediaSession` metadata says, which for a
@@ -375,6 +392,73 @@ deletes the cached entry first, exactly like the original single-action
 version did, so each mode always starts from a real, fresh lookup rather
 than reusing whatever's cached from a previous automatic (or differently
 -restricted) run.
+
+## Manual lyrics search (`runManualSearch`, `fetchLyricsChain`)
+
+Every "Re-search" mode above still searches with whatever title/artist
+Windows itself reported — useful when a *source* got it wrong, useless when
+the *detected metadata itself* is wrong (a re-uploader's channel name stuck
+in as "artist", a completely different song matched by mistake). Tray menu →
+*Re-search lyrics for this song* → *Search manually…* covers that case: it
+opens a small window (`manual-search-preload.js`,
+`renderer/manualSearch.html`/`.css`/`.js`) with two prefilled text inputs —
+Enter in the title field moves to the artist field, Enter in the artist field
+submits — and searches with whatever the user actually typed instead of the
+detected pair.
+
+**The lookup chain itself was extracted out of `handleTrackTick` into
+`fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, isStale })`**
+— steps 1-6 from the previous section, verbatim, just parameterized on which
+title/artist to search *with* instead of reading `data.title`/`data.artist`
+directly, and taking an `isStale()` callback in place of the inline
+`myToken !== fetchToken` checks sprinkled through the chain. `handleTrackTick`
+now just calls it with `data.title`/`data.artist` and its own `fetchToken`
+guard, unchanged in behavior; `runManualSearch` (below) is the second caller,
+with a very different idea of "stale."
+
+**Caching under the real song, searching under what was typed
+(`resolveSearchQuery` in `utils.js`).** Whatever the user submits should still
+land in the cache keyed by the song Windows actually reports — that's what
+makes "next time this song plays, the corrected lyrics are just there"
+possible at all — so `runManualSearch(pinnedTrack, typedTitle, typedArtist)`
+deletes and re-writes `lyricsCache` under `pinnedTrack`'s real title/artist,
+while `resolveSearchQuery` decides what actually gets sent to
+`fetchLyricsChain`: the typed value for whichever field isn't blank, falling
+back to the real detected value otherwise (so clearing just the artist field
+and leaving the title alone still searches with the *real* title, not an
+empty string).
+
+**`pinnedTrack` is captured once, when the window opens
+(`openManualSearchWindow`), not re-read at submit time.** The user might take
+a while to type, during which a genuinely different song can start playing —
+without pinning, whatever was submitted would get attributed to *that* new
+song instead of the one the user actually meant to fix. `manualSearchPinnedTrack`
+freezes `{ title, artist }` at open time; both the window's prefilled inputs
+and the eventual submit handler use that frozen pair as "the song this is
+about," regardless of what `lastTrackData` has since become.
+
+**Whether a manual search touches the live overlay at all depends on whether
+the pinned song is *still* the one actually playing at the moment of
+submission** (`isLive = pinnedKey === currentTrackKey`, checked once, at the
+start of `runManualSearch`):
+- **Still live** (the common case — most searches finish well before the next
+  track change): behaves like a real re-search. Sends `lyrics-loading`, bumps
+  `fetchToken` and hands `fetchLyricsChain` an `isStale` check tied to it —
+  exactly the same staleness guard `handleTrackTick` uses (see "Guarding
+  against a stale lyrics fetch winning a race" above) — so a real track change
+  arriving mid-search still correctly wins over this result rather than the
+  reverse.
+- **No longer live** (the song changed while the window sat open, or while the
+  user was still typing): this becomes a silent background cache warm-up
+  only. `isStale` is hard-wired to always return `false` (nothing here is
+  shared display state to race against once we already know at the start it
+  isn't "the" current song), the lookup runs to completion regardless of
+  whatever else happens meanwhile, and the result is written to
+  `lyricsCache` — but `lyrics-loading`/`lyrics-result` are never sent, and
+  `currentLyrics`/`currentTrackKey` are never touched. The song that's
+  actually playing now keeps following its own normal `handleTrackTick` flow,
+  completely unaffected; the corrected result for the *pinned* song is simply
+  waiting in its cache file the next time it comes back around.
 
 ## Guarding against a stale lyrics fetch winning a race (`fetchToken`)
 

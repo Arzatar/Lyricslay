@@ -2,7 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { trackKeyFor, anchoredBounds, cycleValue, resizeKeepingTopLeftAnchored } = require('../src/utils');
+const { trackKeyFor, anchoredBounds, cycleValue, resizeKeepingTopLeftAnchored, resolveSearchQuery } = require('../src/utils');
 
 test('trackKeyFor combines title and artist into a stable key', () => {
   assert.equal(trackKeyFor('Song', 'Artist'), 'Song::Artist');
@@ -105,4 +105,30 @@ test('resizeKeepingTopLeftAnchored changes width independently of height, keepin
   assert.equal(resized.x, 100);
   assert.equal(resized.width, 850);
   assert.equal(resized.height, 260);
+});
+
+test('resolveSearchQuery uses the real title/artist when there is no override', () => {
+  const result = resolveSearchQuery({ title: 'Song', artist: 'Artist' }, null);
+  assert.deepEqual(result, { searchTitle: 'Song', searchArtist: 'Artist' });
+});
+
+test('resolveSearchQuery prefers the override title/artist when both are given', () => {
+  const result = resolveSearchQuery(
+    { title: 'Wrong Title', artist: 'Wrong Artist' },
+    { title: 'Right Title', artist: 'Right Artist' }
+  );
+  assert.deepEqual(result, { searchTitle: 'Right Title', searchArtist: 'Right Artist' });
+});
+
+test('resolveSearchQuery falls back to the real value for a blank override field', () => {
+  const result = resolveSearchQuery(
+    { title: 'Wrong Title', artist: 'Real Artist' },
+    { title: 'Right Title', artist: '  ' }
+  );
+  assert.deepEqual(result, { searchTitle: 'Right Title', searchArtist: 'Real Artist' });
+});
+
+test('resolveSearchQuery trims the override before using it', () => {
+  const result = resolveSearchQuery({ title: 'Wrong', artist: 'Wrong' }, { title: '  Right  ', artist: '  Also Right  ' });
+  assert.deepEqual(result, { searchTitle: 'Right', searchArtist: 'Also Right' });
 });

@@ -67,4 +67,18 @@ function resizeKeepingTopLeftAnchored(bounds, newWidth, newHeight) {
   };
 }
 
-module.exports = { trackKeyFor, anchoredBounds, cycleValue, resizeKeepingTopLeftAnchored };
+// Given the real track data and an optional {title, artist} override (used by manual
+// lyrics search — see manualSearchLyrics in main.js), returns which title/artist
+// lyrics sources should actually search with. Falls back to the real detected value
+// for whichever override field is missing/blank, so overriding just the artist (or
+// just the title) doesn't accidentally search with an empty string for the other.
+function resolveSearchQuery(data, searchOverride) {
+  const overrideTitle = searchOverride?.title?.trim();
+  const overrideArtist = searchOverride?.artist?.trim();
+  return {
+    searchTitle: overrideTitle || data.title,
+    searchArtist: overrideArtist || data.artist,
+  };
+}
+
+module.exports = { trackKeyFor, anchoredBounds, cycleValue, resizeKeepingTopLeftAnchored, resolveSearchQuery };
