@@ -2,6 +2,16 @@
 
 const { app, BrowserWindow, Tray, Menu, screen, ipcMain, globalShortcut, nativeImage, shell, dialog, Notification } = require('electron');
 const path = require('path');
+// Chromium's native window-occlusion detection (Windows-only) can decide the
+// overlay is "occluded" while a heavy fullscreen game (e.g. FFXIV) sits in
+// front of it, even though it's still drawn on top via 'screen-saver' level —
+// and once a window is considered occluded/backgrounded, Chromium throttles
+// its requestAnimationFrame/timers hard as a power-saving measure. The
+// lyrics scroll (renderer.js's rAF-driven tick()) runs on exactly that loop,
+// so a false "occluded" read shows up as the overlay visibly lagging behind
+// playback rather than as anything actually broken. Must be set before
+// app.whenReady() — Chromium reads command-line switches at startup.
+app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const Store = require('electron-store');
 const { NowPlayingWatcher } = require('./nowplaying');
 const { ForegroundAppWatcher } = require('./foregroundApp');
@@ -341,6 +351,11 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      // Belt-and-suspenders alongside the CalculateNativeWinOcclusion switch
+      // above: even if occlusion detection still fires, this stops Chromium
+      // from throttling the overlay's rAF-driven lyrics scroll just because
+      // the window never holds OS focus (it's click-through by design).
+      backgroundThrottling: false,
     },
   });
 
