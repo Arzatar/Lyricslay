@@ -495,6 +495,38 @@ start of `runManualSearch`):
   completely unaffected; the corrected result for the *pinned* song is simply
   waiting in its cache file the next time it comes back around.
 
+## Using your own lyrics (`saveOwnLyrics`, `manualLyrics.js`)
+
+*Search manually…* still depends on *some* source having the song. For songs
+none of them have (reported: a SoundCloud-only upload, whose uploader name is
+what Windows reports as the "artist"), the only fix used to be hand-editing
+the cache JSON. *Use my own lyrics…* replaces that. The window
+(`own-lyrics-preload.js`, `renderer/ownLyrics.*`) is prefilled with the
+song's current lyrics via `lyricsToEditableText` (LRC when timed, so fixing
+a line or a timestamp is an edit, not a rewrite). On save, `parseUserLyrics`
+turns it back into `{ timed }` or `{ static }`, and `saveOwnLyrics` writes it
+straight into the cache under the *detected* title/artist with
+`source: 'manual'`.
+
+- **Not lrclib.js's `parseLrc`:** that parser drops anything that looks like
+  a duplicated second pass of the file. That's right for crowd-sourced data,
+  but wrong for the user's own deliberate input, so nothing here is
+  second-guessed.
+- **Pinned track:** the target song is pinned when the window opens
+  (`ownLyricsPinnedTrack`), same as manual search.
+- **Racing lookups:** if that song is the one on screen, `fetchToken` is
+  bumped so a lookup still in flight can't land afterwards and overwrite the
+  saved lyrics.
+- **Display-only title/artist:** *Show title as* / *Show artist as* are stored
+  in the same cache entry as `displayTitle`/`displayArtist`. They're only
+  stored when they differ from what was detected. On each track change,
+  `refreshDisplayOverride` loads them into `displayOverride`, and
+  `withDisplayOverride` swaps them into what the renderer is sent
+  (`now-playing`, `get-init-state`). The cache key, lookups and logs keep
+  using the detected pair, because that's the only thing Windows reports each
+  time the song plays. Every cache deletion goes through `deleteCachedLyrics`,
+  which also drops the override.
+
 ## Guarding against a stale lyrics fetch winning a race (`fetchToken`)
 
 `handleTrackTick` fires on every SMTC tick, but a lyrics lookup can take

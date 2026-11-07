@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+    <title>Use My Own Lyrics</title>
+    <link rel="stylesheet" href="manualSearch.css" />
+    <link rel="stylesheet" href="ownLyrics.css" />
+  </head>
+  <body>
+    <h1>Use my own lyrics</h1>
+    <p class="hint">
+      Detected as <strong id="track-label"></strong>. Paste or edit the lyrics
+      below — with LRC timestamps like <code>[01:23.45]A line</code> they scroll
+      in sync, without them they're shown as plain text. They're used
+      automatically every time this song plays.
+    </p>
+    <div class="fields">
+      <div class="field">
+        <label for="title-input">Show title as</label>
+        <input type="text" id="title-input" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="artist-input">Show artist as</label>
+        <input type="text" id="artist-input" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
+    <textarea id="lyrics-input" spellcheck="false" placeholder="[00:12.00]First line&#10;[00:15.50]Second line"></textarea>
+    <p id="status" class="status"></p>
+    <div class="actions">
+      <label class="file-btn" for="file-input">Load .lrc / .txt file…</label>
+      <input type="file" id="file-input" accept=".lrc,.txt,text/plain" hidden />
+      <span class="spacer"></span>
+      <button id="cancel-btn">Cancel</button>
+      <button id="save-btn">Save</button>
+    </div>
+    <script src="ownLyrics.js"></script>
+  </body>
+</html>

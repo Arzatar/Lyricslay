@@ -35,6 +35,7 @@ function getGeminiApiKey() {
 const ytmAuthModule = require('./auth');
 const { LyricsCache } = require('./lyricsCache');
 const { cleanTrackMetadata } = require('./trackMetadata');
+const { parseUserLyrics, lyricsToEditableText } = require('./manualLyrics');
 const logger = require('./logger');
 const updater = require('./updater');
 const {
@@ -160,6 +161,19 @@ let manualSearchWin = null;
 // runManualSearch's comment for why this matters if the song changes while
 // the window is still open.
 let manualSearchPinnedTrack = null;
+// Same idea for "Use my own lyrics…": the song the lyrics are being written
+// for is fixed when the window opens, so a track change while typing/pasting
+// never saves them onto the wrong song.
+let ownLyricsWin = null;
+let ownLyricsPinnedTrack = null;
+// Display-only title/artist the user typed in "Use my own lyrics…" for the
+// song identified by `key` (always the *detected* title/artist — the only
+// thing Windows reports on every play, so the only thing it can be
+// recognized by). Loaded from that song's cache entry (displayTitle/
+// displayArtist) whenever it starts playing, and swapped into what the
+// renderer is sent, so a SoundCloud upload detected as "AsdAsdAsd..." can
+// read "Los Mox" on screen. Lookups, logs and the cache key never see it.
+let displayOverride = null; // { key, title, artist }
 // Last height the renderer asked for via 'set-desired-height' — kept around so
 // applyDesiredSize() can be re-run from win's 'moved' event (e.g. dragged to a
 // different-sized monitor) without needing the renderer to resend it.
@@ -208,7 +222,7 @@ async function doLogin() {
     // The cache has no time-based expiry, so a plain re-fetch would just hit the
     // (possibly worse, unauthenticated) cached entry again — bust it explicitly for
     // whatever's playing right now so signing in actually gets a fresh, better lookup.
-    if (lastTrackData) lyricsCache?.delete(lastTrackData.title, lastTrackData.artist);
+    if (lastTrackData) deleteCachedLyrics(lastTrackData.title, lastTrackData.artist);
     currentTrackKey = null; // force a re-fetch of the current track's lyrics with auth
     updateTrayMenu();
     loginWin?.webContents.send('login-status', { state: 'success', message: 'Signed in!' });
@@ -731,6 +745,13 @@ function updateTrayMenu() {
           label: 'Search manually (enter title/artist)…',
           click: openManualSearchWindow,
         },
+        {
+          // Not a search at all: for songs no source has (e.g. a SoundCloud-
+          // only upload), the user pastes/loads lyrics they wrote or found
+          // themselves and they're stored as-is for the detected song.
+          label: 'Use my own lyrics (paste or load .lrc)…',
+          click: openOwnLyricsWindow,
+        },
       ],
     },
     { type: 'separator' },
@@ -837,7 +858,7 @@ function resetOffset() {
 function retryLyrics(mode = 'auto') {
   if (!lastTrackData?.title || !lyricsCache) return;
   logger.log(`[lyrics] manual re-search requested for "${lastTrackData.title}" — "${lastTrackData.artist}" (mode=${mode})`);
-  lyricsCache.delete(lastTrackData.title, lastTrackData.artist);
+  deleteCachedLyrics(lastTrackData.title, lastTrackData.artist);
   currentTrackKey = null;
   handleTrackTick(lastTrackData, mode);
 }
@@ -980,6 +1001,111 @@ function openManualSearchWindow() {
   manualSearchWin.on('closed', () => {
     manualSearchWin = null;
   });
+}
+
+function createOwnLyricsWindow() {
+  const w = new BrowserWindow({
+    width: 560,
+    height: 600,
+    minWidth: 420,
+    minHeight: 400,
+    parent: win,
+    minimizable: false,
+    maximizable: false,
+    title: 'Use My Own Lyrics',
+    webPreferences: {
+      preload: path.join(__dirname, 'own-lyrics-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  w.setMenuBarVisibility(false);
+  w.loadFile(path.join(__dirname, 'renderer', 'ownLyrics.html'));
+  return w;
+}
+
+function openOwnLyricsWindow() {
+  if (ownLyricsWin && !ownLyricsWin.isDestroyed()) {
+    ownLyricsWin.focus();
+    return;
+  }
+  if (!lastTrackData?.title) return; // tray item is disabled in this case anyway
+  ownLyricsPinnedTrack = { title: lastTrackData.title, artist: lastTrackData.artist };
+  ownLyricsWin = createOwnLyricsWindow();
+  ownLyricsWin.on('closed', () => {
+    ownLyricsWin = null;
+  });
+}
+
+// Stores user-supplied lyrics straight into the cache for `track` (the
+// cleaned title/artist Windows reports — the exact key every future play of
+// this song looks up), replacing whatever was there. No source is queried.
+// If that song is the one on screen right now, any lookup still in flight
+// for it is invalidated (fetchToken) so it can't land afterwards and
+// overwrite what the user just saved.
+function saveOwnLyrics(track, text, display = {}) {
+  if (!lyricsCache) return { ok: false, error: 'Lyrics cache is not ready yet.' };
+  const parsed = parseUserLyrics(text);
+  if (!parsed) return { ok: false, error: 'Paste or type some lyrics first.' };
+
+  // Only stored when it actually differs from what's detected — a blank
+  // field, or one left as detected, means "no override" for that field.
+  const displayTitle = cleanDisplayField(display.title, track.title);
+  const displayArtist = cleanDisplayField(display.artist, track.artist);
+
+  const lyrics = {
+    timed: parsed.timed ?? null,
+    static: parsed.static ?? null,
+    source: 'manual',
+    offsetMs: 0,
+    ...(displayTitle ? { displayTitle } : {}),
+    ...(displayArtist ? { displayArtist } : {}),
+  };
+  lyricsCache.set(track.title, track.artist, lyrics);
+  refreshDisplayOverride(track.title, track.artist, lyrics);
+  logger.log(
+    `[lyrics] own lyrics saved for "${track.title}" — "${track.artist}" ` +
+    `(${parsed.timed ? `${parsed.timed.length} timed lines` : 'plain text'}` +
+    `${displayTitle || displayArtist ? `, shown as "${displayTitle ?? track.title}" — "${displayArtist ?? track.artist}"` : ''})`
+  );
+
+  if (trackKeyFor(track.title, track.artist) === currentTrackKey) {
+    ++fetchToken;
+    if (lastTrackData) win?.webContents.send('now-playing', withDisplayOverride(lastTrackData));
+    currentLyrics = lyricsCache.get(track.title, track.artist) ?? lyrics;
+    win?.webContents.send('lyrics-result', { title: track.title, artist: track.artist, lyrics: lyricsForDisplay(currentLyrics) });
+    maybeBackfillRomaji(track.title, track.artist, currentLyrics);
+  }
+  return { ok: true };
+}
+
+function cleanDisplayField(value, detected) {
+  const v = typeof value === 'string' ? value.trim() : '';
+  return v && v !== detected ? v : null;
+}
+
+// Re-reads `entry` (a cache entry, or null when there's none) for the song
+// identified by the detected title/artist, setting or clearing its override.
+function refreshDisplayOverride(title, artist, entry) {
+  const key = trackKeyFor(title, artist);
+  if (entry?.displayTitle || entry?.displayArtist) {
+    displayOverride = { key, title: entry.displayTitle || title, artist: entry.displayArtist || artist };
+  } else if (displayOverride?.key === key) {
+    displayOverride = null;
+  }
+}
+
+function withDisplayOverride(data) {
+  if (!data?.active || !displayOverride) return data;
+  if (trackKeyFor(data.title, data.artist) !== displayOverride.key) return data;
+  return { ...data, title: displayOverride.title, artist: displayOverride.artist };
+}
+
+// Every cache deletion (re-search, manual search, sign-in) also drops the
+// user's display override along with the entry that carried it.
+function deleteCachedLyrics(title, artist) {
+  lyricsCache?.delete(title, artist);
+  refreshDisplayOverride(title, artist, null);
 }
 
 // A visual 3x3 anchor grid (see renderer/positionPicker.html) — clicking a
@@ -1354,7 +1480,7 @@ async function runManualSearch(pinnedTrack, typedTitle, typedArtist) {
     `[lyrics] manual search requested: searching as "${searchTitle}" — "${searchArtist}" ` +
     `(caching under "${realTitle}" — "${realArtist}")`
   );
-  lyricsCache.delete(realTitle, realArtist);
+  deleteCachedLyrics(realTitle, realArtist);
 
   const pinnedKey = trackKeyFor(realTitle, realArtist);
   const isLive = pinnedKey === currentTrackKey;
@@ -1410,9 +1536,13 @@ async function handleTrackTick(data, mode = 'auto') {
   if (data.active && data.title) {
     const cleaned = cleanTrackMetadata(data.title, data.artist);
     data = { ...data, title: cleaned.title, artist: cleaned.artist };
+    // Only on a track change (one cache read), not every ~800ms tick.
+    if (trackKeyFor(data.title, data.artist) !== currentTrackKey) {
+      refreshDisplayOverride(data.title, data.artist, lyricsCache?.get(data.title, data.artist));
+    }
   }
 
-  win?.webContents.send('now-playing', data);
+  win?.webContents.send('now-playing', withDisplayOverride(data));
 
   if (!data.active || !data.title) return;
   lastTrackData = data;
@@ -1541,7 +1671,7 @@ ipcMain.handle('get-init-state', () => ({
   visibleLines: store.get('visibleLines'),
   lyricsColor: store.get('lyricsColor'),
   colorSwatchVisible: store.get('colorSwatchVisible'),
-  nowPlaying: lastTrackData ?? null,
+  nowPlaying: lastTrackData ? withDisplayOverride(lastTrackData) : null,
   lyrics: currentLyrics ? lyricsForDisplay(currentLyrics) : null,
 }));
 
@@ -1645,6 +1775,30 @@ ipcMain.on('manual-search-submit', (_e, { title, artist } = {}) => {
 
 ipcMain.on('manual-search-close', () => {
   if (manualSearchWin && !manualSearchWin.isDestroyed()) manualSearchWin.close();
+});
+
+ipcMain.handle('own-lyrics-get-prefill', () => {
+  if (!ownLyricsPinnedTrack) return { detectedTitle: '', detectedArtist: '', title: '', artist: '', text: '' };
+  const { title, artist } = ownLyricsPinnedTrack;
+  const entry = lyricsCache?.get(title, artist);
+  return {
+    detectedTitle: title,
+    detectedArtist: artist,
+    title: entry?.displayTitle || title,
+    artist: entry?.displayArtist || artist,
+    text: lyricsToEditableText(entry),
+  };
+});
+
+ipcMain.handle('own-lyrics-save', (_e, { text, title, artist } = {}) => {
+  if (!ownLyricsPinnedTrack) return { ok: false, error: 'No song to save these lyrics for.' };
+  const result = saveOwnLyrics(ownLyricsPinnedTrack, typeof text === 'string' ? text : '', { title, artist });
+  if (result.ok && ownLyricsWin && !ownLyricsWin.isDestroyed()) ownLyricsWin.close();
+  return result;
+});
+
+ipcMain.on('own-lyrics-close', () => {
+  if (ownLyricsWin && !ownLyricsWin.isDestroyed()) ownLyricsWin.close();
 });
 
 ipcMain.on('login-close', () => {

@@ -184,6 +184,17 @@ that same bad entry again:
   you eventually submit is searched and cached for the song that was playing
   when you opened it, not whatever's playing by the time you hit search —
   the new song keeps following its own normal detection, untouched.
+- **Use my own lyrics (paste or load .lrc)…** — not a search: for songs no
+  source has at all (e.g. a SoundCloud-only upload credited to whoever
+  uploaded it). Opens a window prefilled with the song's current lyrics (as
+  LRC when they're timed), where you paste/edit your own or load a `.lrc`/
+  `.txt` file. With LRC timestamps (`[01:23.45]A line`) they scroll in sync;
+  without them they're shown as plain text. Saving stores them as-is for the
+  song Windows reports, replacing whatever was found before, so they're used
+  every time it plays. (A later *Re-search* replaces them again.) The
+  *Show title as* / *Show artist as* fields change only what the overlay
+  displays (e.g. "Los Mox" instead of the uploader's "AsdAsdAsd..."); the
+  song is still recognized by what Windows reports.
 
 **Start with Windows:** tray menu → *Enable start with Windows* launches the
 app automatically at login; the same item switches to *Disable* once it's on.
@@ -327,6 +338,11 @@ src/
   renderer/manualSearch.html, The manual-search window's UI: title/artist
     manualSearch.css,          inputs, Enter-to-advance/search, no mouse
     manualSearch.js            required
+  own-lyrics-preload.js   IPC bridge for the "Use my own lyrics…" window
+  renderer/ownLyrics.html, The own-lyrics window's UI: LRC/plain-text editor
+    ownLyrics.css,          prefilled with the current lyrics, .lrc/.txt
+    ownLyrics.js            loading, Ctrl+Enter to save
+  manualLyrics.js         Pure LRC/plain-text parsing for "Use my own lyrics…"
   textMatch.js           Shared fuzzy title/artist matching (used by ytmusic.js,
                           lrclib.js, and genius.js to pick the best search result)
   utils.js                Small pure helpers (track identity key, window placement,
