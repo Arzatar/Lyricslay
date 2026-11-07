@@ -188,6 +188,12 @@ function applyNowPlaying(data) {
 }
 
 function applyLyricsResult({ lyrics, error }) {
+  if (lyrics?.notMusic) {
+    state.timed = null;
+    state.staticText = null;
+    setHint("This doesn't look like a song — no lyrics.");
+    return;
+  }
   if (error || !lyrics || lyrics.source === 'none') {
     state.timed = null;
     state.staticText = null;

@@ -126,21 +126,36 @@ Return ONLY a JSON array (no markdown, no commentary), in chronological order:
 [{"timeMs": <integer MILLISECONDS from the start of the video — NOT seconds, e.g. a line starting at 1 minute 5 seconds in is timeMs: 65000, not 65>, "index": <the line's 1-based number from the list above>}, ...]`;
   }
 
-  return `You are given a YouTube video of a song. Watch/listen to it and
-transcribe its lyrics.
+  // Blind mode is also the only point where the chain has no evidence at
+  // all that this is even a song: nothing in any lyrics database matched it.
+  // Whatever is playing might just as well be a gameplay video, a vlog or an
+  // anime episode — confirmed live: given such a video, the model happily
+  // "transcribed" its narration as lyrics. So it's asked to classify first
+  // (same call, no extra request), and a non-music verdict short-circuits to
+  // "no lyrics" — which is also what lets sessionHold.js resume real music
+  // over it (it only resumes tracks that have lyrics).
+  return `You are given a YouTube video that is reported to the user's media player
+as "${title || 'unknown'}"${artist ? ` by ${artist}` : ''}. It may or may not be a song.
 
-${known}${durationHint}
+${durationHint}
 
-If you cannot actually access/watch the video, or what you can access clearly
-isn't this song (wrong track, removed/unavailable video, silent/blank video,
-etc.), do NOT guess or invent lyrics from general knowledge of the song —
-return [] instead.
+First decide whether the video's main content is MUSIC — a song with sung or
+rapped vocals: an official/lyric/fan music video, live performance, cover,
+karaoke, a song with a short spoken intro, an anime opening, etc. Anything
+whose main content is NOT a song is not music: gameplay, vlogs, podcasts,
+talk/commentary, reactions, tutorials, news, TV/anime episodes, trailers,
+compilations of clips, etc. If you are unsure, treat it as music.
 
-Return ONLY a JSON array (no markdown, no commentary) of objects, one per sung
-line, in chronological order:
-[{"timeMs": <integer MILLISECONDS from the start of the video where this line begins — NOT seconds, e.g. a line starting at 1 minute 5 seconds into the song is timeMs: 65000, not 65>, "text": "<the line, no annotations like [Chorus]>"}, ...]
+If it IS music, transcribe its sung lyrics. If you cannot actually
+access/watch the video, or what you can access clearly isn't the reported
+track (removed/unavailable video, silent/blank video, etc.), do NOT guess or
+invent lyrics from general knowledge of the song — return no lines instead.
 
-If the track is instrumental or has no discernible vocals, return [].`;
+Return ONLY a JSON object (no markdown, no commentary):
+{"isMusic": <true|false>, "lines": [{"timeMs": <integer MILLISECONDS from the start of the video where this line begins — NOT seconds, e.g. a line starting at 1 minute 5 seconds into the song is timeMs: 65000, not 65>, "text": "<the line, no annotations like [Chorus]>"}, ...]}
+
+"lines" must be in chronological order, one entry per sung line. If isMusic is
+false, or the track is instrumental / has no discernible vocals, "lines" is [].`;
 }
 
 function parseTimedLyrics(json) {
@@ -153,6 +168,37 @@ function parseTimedLyrics(json) {
   } catch {
     return null;
   }
+  return timedFromLineArray(parsed);
+}
+
+// Blind-mode counterpart to parseTimedLyrics: the response is a
+// {isMusic, lines} object (see buildPrompt). Returns { notMusic: true } for a
+// non-music verdict — truthy on purpose, so tryModels accepts it as a final
+// answer instead of retrying the next model for a "better" one — { timed }
+// for usable lyrics, or null (instrumental, unreadable, nothing usable).
+// A bare array is still accepted, treated as music, in case a model ignores
+// the requested object shape.
+function parseBlindResponse(json) {
+  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) return null;
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (Array.isArray(parsed)) {
+    const timed = timedFromLineArray(parsed);
+    return timed ? { timed } : null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  if (parsed.isMusic === false) return { notMusic: true };
+  const timed = timedFromLineArray(parsed.lines);
+  return timed ? { timed } : null;
+}
+
+function timedFromLineArray(parsed) {
   if (!Array.isArray(parsed) || parsed.length === 0) return null;
 
   const timed = parsed
@@ -403,7 +449,8 @@ async function fetchWindowedGroundedTimedLyrics(videoId, apiKey, onAttempt, dura
 }
 
 // Returns { timed, model, correctedUnits } from whichever model worked
-// first, or null if the video has no usable lyrics (including: the video
+// first, { notMusic: true, model } if (blind mode only) the model judged the
+// video not to be a song at all, or null if the video has no usable lyrics (including: the video
 // itself is gone — checked up front, before spending a model call on it).
 // `durationMs` (the song's real, known duration) is optional but strongly
 // recommended — it's what makes the seconds-vs-milliseconds correction above
@@ -459,18 +506,25 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, ti
       ],
       generationConfig: { responseMimeType: 'application/json' },
     }),
-    (json) => (grounded ? parseGroundedTimedLyrics(json, knownLines) : parseTimedLyrics(json)),
+    (json) => {
+      if (grounded) {
+        const timed = parseGroundedTimedLyrics(json, knownLines);
+        return timed ? { timed } : null;
+      }
+      return parseBlindResponse(json);
+    },
     onAttempt
   );
   if (!outcome) return null;
+  if (outcome.result.notMusic) return { notMusic: true, model: outcome.model };
 
-  const corrected = correctSecondsMistakenForMs(outcome.result, durationMs);
+  const corrected = correctSecondsMistakenForMs(outcome.result.timed, durationMs);
   const trimmed = dropLinesPastKnownDuration(corrected, durationMs);
   if (trimmed.length === 0) return null;
   return {
     timed: trimmed,
     model: outcome.model,
-    correctedUnits: corrected !== outcome.result,
+    correctedUnits: corrected !== outcome.result.timed,
     droppedPastDuration: trimmed.length !== corrected.length,
     grounded,
   };
@@ -483,6 +537,7 @@ module.exports = {
   interpolateWindowTimestamps,
   trimBoundaryOverlap,
   parseTimedLyrics,
+  parseBlindResponse,
   parseGroundedTimedLyrics,
   parseWindowIndices,
   splitKnownLyricsLines,

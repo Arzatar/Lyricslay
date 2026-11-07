@@ -14,6 +14,7 @@ const path = require('path');
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 const Store = require('electron-store');
 const { NowPlayingWatcher } = require('./nowplaying');
+const { SessionHold } = require('./sessionHold');
 const { ForegroundAppWatcher } = require('./foregroundApp');
 const { fetchLyricsForTrack, searchSong } = require('./ytmusic');
 const { fetchSyncedLyrics } = require('./lrclib');
@@ -1289,7 +1290,13 @@ async function fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, i
           staticFallback?.static ?? null
         );
         if (isStale()) return null;
-        if (result) {
+        if (result?.notMusic) {
+          // Final answer for this track: not a song, so no lyrics — and no
+          // static fallback either (there can't be one in blind mode anyway).
+          // Cached like any other result so it's never asked again.
+          logger.log(`[lyrics] gemini (${result.model}): classified as not music, no lyrics`);
+          lyrics = { timed: null, static: null, source: `gemini-not-music:${result.model}`, notMusic: true };
+        } else if (result) {
           if (result.correctedUnits) {
             logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
           }
@@ -1315,7 +1322,7 @@ async function fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, i
     lyrics = { timed: null, static: null, source: 'none' };
   }
 
-  logger.log(`[lyrics] result: source=${lyrics.source} ${lyrics.timed ? '(timed)' : lyrics.static ? '(static)' : '(none)'}`);
+  logger.log(`[lyrics] result: source=${lyrics.source} ${lyrics.timed ? '(timed)' : lyrics.static ? '(static)' : lyrics.notMusic ? '(not music)' : '(none)'}`);
   return lyrics;
 }
 
@@ -1429,7 +1436,7 @@ async function handleTrackTick(data, mode = 'auto') {
   // whatever else happens to touch the tray next.
   updateTrayMenu();
 
-  logger.log(`[lyrics] new track: "${data.title}" — "${data.artist}"`);
+  logger.log(`[lyrics] new track: "${data.title}" — "${data.artist}" (app=${data.appId}, status=${data.status}${data.held ? ', resumed' : ''})`);
 
   const cached = lyricsCache?.get(data.title, data.artist);
   if (cached) {
@@ -1475,9 +1482,32 @@ async function handleTrackTick(data, mode = 'auto') {
   }
 }
 
+// Only a track that actually has lyrics is worth resuming over a paused
+// session (see sessionHold.js) — that's what keeps a video Gemini classified
+// as "not music" from being resumed over paused music in the mirrored case.
+function hasDisplayableLyrics(rawData) {
+  const { title, artist } = cleanTrackMetadata(rawData.title, rawData.artist);
+  const cached = lyricsCache?.get(title, artist);
+  if (!cached || cached.notMusic) return false;
+  return (Array.isArray(cached.timed) && cached.timed.length > 0) || !!cached.static;
+}
+
 function startWatcher() {
   watcher = new NowPlayingWatcher();
-  watcher.on('track', handleTrackTick);
+  const sessionHold = new SessionHold({
+    isEligible: hasDisplayableLyrics,
+    onHoldChange: (held, reported, reason) => {
+      if (held) {
+        logger.log(
+          `[nowplaying] "${reported.title}" is paused but ${held.appId} is still playing audio — ` +
+          `resuming last playing track "${held.title}" — "${held.artist}"`
+        );
+      } else {
+        logger.log(`[nowplaying] stopped resuming displaced track (${reason})`);
+      }
+    },
+  });
+  watcher.on('track', (data) => handleTrackTick(sessionHold.process(data)));
   watcher.on('error', () => {
     win?.webContents.send('now-playing', { active: false });
   });

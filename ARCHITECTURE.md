@@ -61,6 +61,41 @@ that by using PowerShell's own (built-in, no-install) WinRT projection, and
 `nowplaying.js` just spawns it once, keeps it alive across restarts, and parses
 its `stdout` (one JSON object per line, emitted every ~800ms).
 
+### One session per browser, not per tab (`sessionHold.js`)
+
+Chromium-based browsers (Opera GX, Chrome, Edge, ...) expose a **single** SMTC
+session for the whole browser, fed by whichever tab most recently *started*
+playing. So: YT Music playing in one tab → press play on a video in another tab
+→ pause it, and the browser's one session keeps reporting the paused video even
+though the music never stopped. The music tab stays invisible to Windows until
+it's refocused. (Just focusing a tab that's already paused doesn't trigger this.
+Pressing play there does.)
+
+Two pieces work around it:
+
+- `nowplaying.ps1` adds an `audible` field to each *paused* tick. It's read from
+  the Core Audio peak meters of the audio sessions whose process name appears in
+  the SMTC appId (`opera` in `OperaSoftware.OperaGXWebBrowser.…`, `chrome`,
+  `msedge`, `spotify`, …). It's `null` when no meter matches, e.g. Firefox's
+  appId is an opaque hash.
+- `SessionHold` (pure, see `test/sessionHold.test.js`) remembers tracks that were
+  *displaced* while still Playing, meaning a different track from the same app
+  took over. When that app then reports a Paused track while still audible, it
+  re-emits the displaced track with its position extrapolated from when it was
+  last really seen. Exceptions:
+  - A displaced track that would already have ended is never resumed.
+  - A track replaced within its last 5s (a natural song change) is never
+    resumed.
+  - Nothing is resumed unless it has lyrics (`hasDisplayableLyrics` in
+    `main.js`). This keeps the mirrored case (a video playing, music started
+    over it, then the music paused) from resuming the video.
+
+That last rule leans on Gemini's blind-mode prompt also classifying
+music vs. not-music. A gameplay video or vlog gets cached as `notMusic` (no
+lyrics) instead of getting its narration "transcribed" as lyrics. Gemini is
+still only asked as the last step of the normal chain. The classification is
+part of that same call, not an extra one.
+
 ## Per-app remembered position (`foregroundApp.js`)
 
 The overlay remembers a separate position/size per foreground app (top-center

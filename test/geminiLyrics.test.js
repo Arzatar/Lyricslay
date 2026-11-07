@@ -8,6 +8,7 @@ const {
   interpolateWindowTimestamps,
   trimBoundaryOverlap,
   parseTimedLyrics,
+  parseBlindResponse,
   parseGroundedTimedLyrics,
   parseWindowIndices,
   splitKnownLyricsLines,
@@ -215,4 +216,37 @@ test('trimBoundaryOverlap does not eat a real intentional repeat reported within
   // both windows genuinely touch the same repeated tag line) should only
   // have the exact overlapping run trimmed, not anything beyond it.
   assert.deepEqual(trimBoundaryOverlap([33, 34], [34, 35, 34, 35]), [35, 34, 35]);
+});
+
+const geminiText = (text) => ({ candidates: [{ content: { parts: [{ text }] } }] });
+
+test('parseBlindResponse returns { notMusic: true } when the model says the video is not music', () => {
+  assert.deepEqual(parseBlindResponse(geminiText('{"isMusic":false,"lines":[]}')), { notMusic: true });
+  // Even if it (wrongly) still sent lines alongside a non-music verdict.
+  assert.deepEqual(
+    parseBlindResponse(geminiText('{"isMusic":false,"lines":[{"timeMs":1000,"text":"narration"}]}')),
+    { notMusic: true }
+  );
+});
+
+test('parseBlindResponse returns sorted timed lines for music', () => {
+  const json = geminiText('{"isMusic":true,"lines":[{"timeMs":5000,"text":"b"},{"timeMs":1000,"text":"a"}]}');
+  assert.deepEqual(parseBlindResponse(json), {
+    timed: [
+      { timeMs: 1000, text: 'a' },
+      { timeMs: 5000, text: 'b' },
+    ],
+  });
+});
+
+test('parseBlindResponse returns null for music with no lines (instrumental) or malformed JSON', () => {
+  assert.equal(parseBlindResponse(geminiText('{"isMusic":true,"lines":[]}')), null);
+  assert.equal(parseBlindResponse(geminiText('not json')), null);
+  assert.equal(parseBlindResponse({}), null);
+});
+
+test('parseBlindResponse still accepts a bare array (model ignored the object shape)', () => {
+  assert.deepEqual(parseBlindResponse(geminiText('[{"timeMs":1000,"text":"a"}]')), {
+    timed: [{ timeMs: 1000, text: 'a' }],
+  });
 });
