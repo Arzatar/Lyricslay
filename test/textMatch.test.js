@@ -58,3 +58,35 @@ test('pickBestMatch applies extraScore as a tiebreaker', () => {
   );
   assert.equal(best.hasSync, true);
 });
+
+test('pickBestMatch with minScore rejects a list where nothing resembles the query', () => {
+  // Real case: YT Music answered an anime episode's title with "I Got Bitches" by A2m.
+  const candidates = [{ title: 'I Got Bitches', artist: 'A2m' }];
+  const best = pickBestMatch(
+    candidates,
+    "S1 E4 - We Went to a Dragon's Wedding",
+    "I've Been Killing Slimes For 300 Years And Maxed Out My Level",
+    (c) => c.title,
+    (c) => c.artist,
+    null,
+    1
+  );
+  assert.equal(best, null);
+});
+
+test('pickBestMatch with minScore still accepts a real partial match', () => {
+  const candidates = [{ title: 'Lemon', artist: 'Kenshi Yonezu' }];
+  const best = pickBestMatch(candidates, 'Lemon (Official Video)', 'Kenshi Yonezu', (c) => c.title, (c) => c.artist, null, 1);
+  assert.equal(best, candidates[0]);
+});
+
+test('pickBestMatch with minScore keeps non-Latin titles working', () => {
+  const candidates = [{ title: 'Lemon', artist: 'Kenshi Yonezu' }];
+  const best = pickBestMatch(candidates, 'レモン', '米津玄師', (c) => c.title, (c) => c.artist, null, 1);
+  assert.equal(best, candidates[0]);
+});
+
+test('pickBestMatch without minScore keeps the old always-pick-something behavior', () => {
+  const candidates = [{ title: 'I Got Bitches', artist: 'A2m' }];
+  assert.equal(pickBestMatch(candidates, 'Something Else', 'Nobody', (c) => c.title, (c) => c.artist), candidates[0]);
+});

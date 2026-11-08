@@ -106,7 +106,12 @@ async function searchSong(title, artist, authHeaders) {
 
   if (candidates.length === 0) return null;
 
-  return pickBestMatch(candidates, title, artist, (c) => c.title, (c) => c.artist);
+  // A score of 0 means neither title nor artist overlaps the query at all —
+  // YT Music's search always returns *something*, and taking it anyway was
+  // confirmed live to attach a completely unrelated song's lyrics ("I Got
+  // Bitches" by A2m) to an anime episode's title. Non-Latin titles aren't
+  // affected: they normalize to "", which counts as a partial title match.
+  return pickBestMatch(candidates, title, artist, (c) => c.title, (c) => c.artist, null, 1);
 }
 
 // Parses the (undocumented) timed-lyrics renderer YT Music uses in its own web client.

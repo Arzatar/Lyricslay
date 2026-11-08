@@ -118,6 +118,14 @@ The prompt also no longer says "if unsure, treat it as music", and tells the
 model that a long video merely *containing* a song (an episode's opening) is
 not music.
 
+The episode-title check also runs at the very start of `fetchLyricsChain`,
+before any source, not only before blind mode. Confirmed live: the same
+episode later got an unrelated song's static lyrics ("I Got Bitches" by A2m)
+from YT Music's search, which then grounded Gemini and bypassed the
+blind-mode checks entirely. That search also no longer accepts a best result
+that shares nothing with the query (`pickBestMatch`'s `minScore`, used by
+`searchSong` in `ytmusic.js`).
+
 ## Per-app remembered position (`foregroundApp.js`)
 
 The overlay remembers a separate position/size per foreground app (top-center

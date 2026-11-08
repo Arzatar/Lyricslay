@@ -36,7 +36,9 @@ function scoreCandidate(candidateTitle, candidateArtist, queryTitle, queryArtist
 // `getArtist` extract the comparable strings from each candidate shape, and
 // `extraScore` (optional) lets callers break ties on criteria unrelated to text
 // similarity (e.g. lrclib.js preferring candidates that actually have synced lyrics).
-function pickBestMatch(candidates, queryTitle, queryArtist, getTitle, getArtist, extraScore) {
+// `minScore` (optional): return null instead of the best candidate when even
+// that one scores below it — i.e. nothing in the list resembles the query.
+function pickBestMatch(candidates, queryTitle, queryArtist, getTitle, getArtist, extraScore, minScore) {
   if (!candidates || candidates.length === 0) return null;
 
   let best = candidates[0];
@@ -49,6 +51,7 @@ function pickBestMatch(candidates, queryTitle, queryArtist, getTitle, getArtist,
       best = candidate;
     }
   }
+  if (Number.isFinite(minScore) && bestScore < minScore) return null;
   return best;
 }
 

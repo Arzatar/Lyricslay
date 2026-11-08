@@ -25,7 +25,7 @@ const genius = require('./genius');
 // Gemini API key...); nothing is shipped/shared between installs. A
 // GEMINI_API_KEY env var can override it too, purely as a local-dev
 // convenience for testing without touching the encrypted store.
-const { fetchGeminiTimedLyrics, blindModeSkipReason } = require('./geminiLyrics');
+const { fetchGeminiTimedLyrics, blindModeSkipReason, looksLikeEpisodeTitle } = require('./geminiLyrics');
 const { fetchRomajiLines, fetchRomajiText } = require('./geminiRomaji');
 const { lyricsAreJapanese } = require('./langDetect');
 const geminiKeyStore = require('./geminiKeyStore');
@@ -1340,6 +1340,18 @@ async function fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, i
   // ytmResult/videoId gets threaded through every step so the AI fallback
   // can reuse whichever YT Music search already resolved a videoId,
   // without a redundant extra search call.
+  // An episode-shaped title ("S1 E4 - …") is not a song, whatever any search
+  // returns for it — checked before every source, not just before Gemini,
+  // since a fuzzy database search can still "find" an unrelated song for it
+  // (confirmed live, see searchSong in ytmusic.js). Skipped only for an
+  // explicit "Gemini AI only" re-search.
+  if (mode !== 'gemini' && looksLikeEpisodeTitle(searchTitle)) {
+    logger.log('[lyrics] title looks like an episode, treating as not music');
+    const lyrics = { timed: null, static: null, source: 'not-music:episode-title', notMusic: true };
+    logger.log(`[lyrics] result: source=${lyrics.source} (not music)`);
+    return lyrics;
+  }
+
   let lyrics = null;
   let ytmResult = null;
   let staticFallback = null; // { static, source } — last resort only
