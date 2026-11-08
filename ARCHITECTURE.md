@@ -96,6 +96,28 @@ lyrics) instead of getting its narration "transcribed" as lyrics. Gemini is
 still only asked as the last step of the normal chain. The classification is
 part of that same call, not an extra one.
 
+The model's own verdict isn't enough on its own, though: an anime episode
+(`S1 E4 - …`, 23:40) was classified as music by `gemini-3.5-flash-lite`, which
+then invented a whole English song for it. So blind mode has two cheap checks
+around that call (`geminiLyrics.js`):
+
+- **Before the call** (`blindModeSkipReason`): an episode-shaped title
+  (`S1 E4`, `Episode 12`, `Ep. 3`, `Episodio`, `Capítulo`) or a duration past
+  the user's long-video limit skips Gemini entirely and caches the track as
+  `notMusic` (source `not-music:episode-title` / `not-music:too-long`). The
+  limit is the `aiLongVideoLimitEnabled` / `aiLongVideoLimitMinutes` store
+  keys, default on at 12 min, editable from tray → *Settings*. Only applied in
+  blind mode (a database wording hit means it's a real song, however long),
+  and not in explicit *Gemini AI only* mode.
+- **After the call** (`coversTooLittleOfVideo`): on a 6+ minute video, lyrics
+  whose last line lands before 30% of the runtime are treated as `notMusic`
+  too (`gemini-not-music-low-coverage:…`). The fabricated song above only
+  covered 3.5s–164s of 1420s.
+
+The prompt also no longer says "if unsure, treat it as music", and tells the
+model that a long video merely *containing* a song (an episode's opening) is
+not music.
+
 ## Per-app remembered position (`foregroundApp.js`)
 
 The overlay remembers a separate position/size per foreground app (top-center

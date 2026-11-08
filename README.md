@@ -209,6 +209,17 @@ for how it works and why it needs your own key rather than a shared one.
 Leaving it unconfigured is fully supported: the app just skips straight to
 the plain-text fallbacks (lyrics.ovh, Genius) instead.
 
+**Long videos and episodes:** when no lyrics site knows a video at all, the
+AI is asked to listen to it directly, and for things that aren't songs
+(TV/anime episodes, streams, podcasts) it can make lyrics up. So by default
+it's skipped for videos longer than **12 minutes**, and for titles that look
+like an episode ("S1 E4", "Episode 12", "Ep. 3"…). Those show *"This doesn't
+look like a song"* instead. Tray menu → *Settings* → *Skip AI lyrics for
+videos over N min* turns the length check on/off, and *Change long-video
+limit…* lets you type your own number of minutes. *Re-search lyrics for this
+song* → *Gemini AI only* always asks the AI anyway. Changing the limit doesn't
+redo videos that were already looked up; re-search those to apply it.
+
 **Romaji for Japanese lyrics:** tray menu → *Settings* → *Show romaji for
 Japanese lyrics* toggles converting Japanese lyrics (from any source, not
 just the AI fallback above) into romaji. Needs the same Gemini key as *AI
@@ -311,6 +322,9 @@ src/
   renderer/geminiKey.html, The AI lyrics fallback settings window's UI: paste/
     geminiKey.css,          clear a Gemini API key, link to get a free one
     geminiKey.js
+  long-video-limit-preload.js IPC bridge for the long-video limit window
+  renderer/longVideoLimit.html, The long-video limit window: on/off + minutes
+    longVideoLimit.js         for skipping AI lyrics on long videos
   lyricsOvh.js            lyrics.ovh client: free, keyless, plain-text-only
   genius.js               Last-resort fallback: Genius search + lyrics-page scraping
   lyricsCache.js          Per-song, on-disk lyrics cache (title+artist keyed, no

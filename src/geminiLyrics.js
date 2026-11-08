@@ -141,10 +141,12 @@ ${durationHint}
 
 First decide whether the video's main content is MUSIC — a song with sung or
 rapped vocals: an official/lyric/fan music video, live performance, cover,
-karaoke, a song with a short spoken intro, an anime opening, etc. Anything
-whose main content is NOT a song is not music: gameplay, vlogs, podcasts,
-talk/commentary, reactions, tutorials, news, TV/anime episodes, trailers,
-compilations of clips, etc. If you are unsure, treat it as music.
+karaoke, a song with a short spoken intro, a standalone anime opening, etc.
+Anything whose main content is NOT a song is not music: gameplay, vlogs,
+podcasts, talk/commentary, reactions, tutorials, news, TV/anime episodes,
+trailers, compilations of clips, etc. A long video that merely CONTAINS a
+song somewhere (an episode with its opening/ending, a stream with background
+music) is not music either — judge by what most of its runtime is.
 
 If it IS music, transcribe its sung lyrics. If you cannot actually
 access/watch the video, or what you can access clearly isn't the reported
@@ -277,6 +279,58 @@ function dropLinesPastKnownDuration(timed, durationMs) {
   if (!Number.isFinite(durationMs) || durationMs <= 0) return timed;
   const limit = durationMs + 5000;
   return timed.filter((l) => l.timeMs <= limit);
+}
+
+// Cheap, deterministic "this isn't a song" checks for blind mode, run before
+// any Gemini call is spent. Confirmed live: an anime episode on YouTube
+// ("S1 E4 - We Went to a Dragon's Wedding", 23:40 long) was classified as
+// music by gemini-3.5-flash-lite anyway, which then fabricated a whole
+// English song for it (16 lines, none of them real). Nothing in any lyrics
+// database matched it either — which is exactly what lands a video in blind
+// mode — so the title and the length are the only evidence available
+// beforehand, and both pointed clearly at "not a song".
+const EPISODE_TITLE_RES = [
+  /\bS\d{1,2}\s*[-:.]?\s*E\d{1,4}\b/i, // "S1 E4", "S01E04", "S2-E10"
+  /\bepisode\s*#?\d+/i,
+  /\bep\.\s*\d+/i, // "Ep. 4" — the period is required so a music "EP 2" isn't caught
+  /\bepisodio\s*#?\d+/i,
+  /\bcap[ií]tulo\s*#?\d+/i,
+];
+
+function looksLikeEpisodeTitle(title) {
+  if (typeof title !== 'string' || !title) return false;
+  return EPISODE_TITLE_RES.some((re) => re.test(title));
+}
+
+// Returns a short reason string ("episode-title", "too-long") when blind mode
+// shouldn't even be attempted for this video, or null to go ahead.
+// `maxDurationMs` is the user's long-video limit (tray → Settings), or
+// null/0 when they turned that check off — the episode-title check always
+// applies regardless.
+function blindModeSkipReason({ title, durationMs, maxDurationMs }) {
+  if (looksLikeEpisodeTitle(title)) return 'episode-title';
+  if (
+    Number.isFinite(maxDurationMs) && maxDurationMs > 0 &&
+    Number.isFinite(durationMs) && durationMs > maxDurationMs
+  ) {
+    return 'too-long';
+  }
+  return null;
+}
+
+// After-the-fact counterpart to blindModeSkipReason: a real transcribed song
+// has lyrics spread over most of its length, whereas the fabricated "song" in
+// the episode case above only covered 3.5s-164s of a 1420s video (~11%) — a
+// song-shaped invention, not a transcription. Only applied to videos long
+// enough (6+ min) that a short sung span is genuinely suspicious; a 3-minute
+// track with a long instrumental outro is left alone.
+const LOW_COVERAGE_MIN_DURATION_MS = 6 * 60 * 1000;
+const LOW_COVERAGE_RATIO = 0.3;
+
+function coversTooLittleOfVideo(timed, durationMs) {
+  if (!Array.isArray(timed) || timed.length === 0) return false;
+  if (!Number.isFinite(durationMs) || durationMs < LOW_COVERAGE_MIN_DURATION_MS) return false;
+  return timed[timed.length - 1].timeMs < durationMs * LOW_COVERAGE_RATIO;
 }
 
 // Windowed grounded mode: instead of asking Gemini to output a millisecond
@@ -521,6 +575,10 @@ async function fetchGeminiTimedLyrics(videoId, apiKey, onAttempt, durationMs, ti
   const corrected = correctSecondsMistakenForMs(outcome.result.timed, durationMs);
   const trimmed = dropLinesPastKnownDuration(corrected, durationMs);
   if (trimmed.length === 0) return null;
+  if (!grounded && coversTooLittleOfVideo(trimmed, durationMs)) {
+    onAttempt?.(outcome.model, 'lyrics cover too little of the video, treating as not music');
+    return { notMusic: true, model: outcome.model, lowCoverage: true };
+  }
   return {
     timed: trimmed,
     model: outcome.model,
@@ -542,4 +600,7 @@ module.exports = {
   parseWindowIndices,
   splitKnownLyricsLines,
   isVideoAvailable,
+  looksLikeEpisodeTitle,
+  blindModeSkipReason,
+  coversTooLittleOfVideo,
 };

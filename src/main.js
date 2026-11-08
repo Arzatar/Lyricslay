@@ -25,7 +25,7 @@ const genius = require('./genius');
 // Gemini API key...); nothing is shipped/shared between installs. A
 // GEMINI_API_KEY env var can override it too, purely as a local-dev
 // convenience for testing without touching the encrypted store.
-const { fetchGeminiTimedLyrics } = require('./geminiLyrics');
+const { fetchGeminiTimedLyrics, blindModeSkipReason } = require('./geminiLyrics');
 const { fetchRomajiLines, fetchRomajiText } = require('./geminiRomaji');
 const { lyricsAreJapanese } = require('./langDetect');
 const geminiKeyStore = require('./geminiKeyStore');
@@ -96,6 +96,14 @@ const store = new Store({
     lyricsColor: '#ffffff',
     colorSwatchVisible: false,
     showRomaji: false,
+    // Blind-mode AI lyrics are skipped for videos longer than this (tray →
+    // Settings) — a 20+ minute video that no lyrics database matched is
+    // almost never a single song (episodes, streams, podcasts), and Gemini
+    // was confirmed to invent a whole song for one anyway (see
+    // blindModeSkipReason in geminiLyrics.js). On by default for everyone;
+    // the user can turn it off or pick their own limit in minutes.
+    aiLongVideoLimitEnabled: true,
+    aiLongVideoLimitMinutes: 12,
     shortcuts: DEFAULT_SHORTCUTS,
   },
 });
@@ -156,6 +164,7 @@ let shortcutsWin = null;
 let positionPickerWin = null;
 let geminiKeyWin = null;
 let manualSearchWin = null;
+let longVideoLimitWin = null;
 // The {title, artist} that was actually playing when "Search manually…" was
 // opened — captured once, there, rather than re-read at submit time. See
 // runManualSearch's comment for why this matters if the song changes while
@@ -694,6 +703,19 @@ function updateTrayMenu() {
           label: store.get('showRomaji') ? 'Show original (hide romaji)' : 'Show romaji for Japanese lyrics',
           click: toggleShowRomaji,
         },
+        {
+          // On by default (see the aiLongVideoLimitEnabled store default):
+          // the AI isn't asked to "transcribe" an unmatched video longer than
+          // this — episodes/streams it would otherwise invent a song for.
+          label: `Skip AI lyrics for videos over ${store.get('aiLongVideoLimitMinutes')} min`,
+          type: 'checkbox',
+          checked: store.get('aiLongVideoLimitEnabled'),
+          click: toggleLongVideoLimit,
+        },
+        {
+          label: 'Change long-video limit…',
+          click: openLongVideoLimitWindow,
+        },
         { type: 'separator' },
         {
           // Off by default (see the perAppPositionEnabled store default) —
@@ -1000,6 +1022,53 @@ function openManualSearchWindow() {
   manualSearchWin = createManualSearchWindow();
   manualSearchWin.on('closed', () => {
     manualSearchWin = null;
+  });
+}
+
+// Long-video limit for blind-mode AI lyrics (see the aiLongVideoLimitEnabled
+// store default). Minutes are clamped to a sane whole-number range so a typo
+// can't produce a 0/negative limit that would skip the AI for everything.
+const LONG_VIDEO_LIMIT_MIN = 1;
+const LONG_VIDEO_LIMIT_MAX = 600;
+
+function longVideoLimitMs() {
+  if (!store.get('aiLongVideoLimitEnabled')) return null;
+  return store.get('aiLongVideoLimitMinutes') * 60 * 1000;
+}
+
+function toggleLongVideoLimit() {
+  store.set('aiLongVideoLimitEnabled', !store.get('aiLongVideoLimitEnabled'));
+  updateTrayMenu();
+}
+
+function createLongVideoLimitWindow() {
+  const w = new BrowserWindow({
+    width: 420,
+    height: 330,
+    parent: win,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    title: 'Long-video limit',
+    webPreferences: {
+      preload: path.join(__dirname, 'long-video-limit-preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  w.setMenuBarVisibility(false);
+  w.loadFile(path.join(__dirname, 'renderer', 'longVideoLimit.html'));
+  return w;
+}
+
+function openLongVideoLimitWindow() {
+  if (longVideoLimitWin && !longVideoLimitWin.isDestroyed()) {
+    longVideoLimitWin.focus();
+    return;
+  }
+  longVideoLimitWin = createLongVideoLimitWindow();
+  longVideoLimitWin.on('closed', () => {
+    longVideoLimitWin = null;
   });
 }
 
@@ -1400,6 +1469,24 @@ async function fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, i
   // lines instead of transcribing the song blind — see geminiLyrics.js's
   // grounded prompt.
   const geminiApiKey = getGeminiApiKey();
+
+  // Blind mode only (nothing above found even plain wording, so there's no
+  // evidence at all this is a song): skip Gemini outright for an obvious
+  // episode title or a video past the user's long-video limit, and record it
+  // as not music. Not applied when the user explicitly picked "Gemini AI
+  // only" — that's a deliberate request to ask the AI anyway.
+  if (!lyrics && !staticFallback && geminiApiKey && mode !== 'gemini') {
+    const skipReason = blindModeSkipReason({
+      title: searchTitle,
+      durationMs,
+      maxDurationMs: longVideoLimitMs(),
+    });
+    if (skipReason) {
+      logger.log(`[lyrics] gemini: skipped (${skipReason}), treating as not music`);
+      lyrics = { timed: null, static: null, source: `not-music:${skipReason}`, notMusic: true };
+    }
+  }
+
   if (!lyrics && geminiApiKey) {
     const videoId = ytmResult?.videoId ?? (await searchSong(searchTitle, searchArtist))?.videoId;
     if (isStale()) return null;
@@ -1420,8 +1507,13 @@ async function fetchLyricsChain({ searchTitle, searchArtist, durationMs, mode, i
           // Final answer for this track: not a song, so no lyrics — and no
           // static fallback either (there can't be one in blind mode anyway).
           // Cached like any other result so it's never asked again.
-          logger.log(`[lyrics] gemini (${result.model}): classified as not music, no lyrics`);
-          lyrics = { timed: null, static: null, source: `gemini-not-music:${result.model}`, notMusic: true };
+          logger.log(`[lyrics] gemini (${result.model}): ${result.lowCoverage ? 'returned lyrics covering too little of the video' : 'classified as not music'}, no lyrics`);
+          lyrics = {
+            timed: null,
+            static: null,
+            source: `gemini-not-music${result.lowCoverage ? '-low-coverage' : ''}:${result.model}`,
+            notMusic: true,
+          };
         } else if (result) {
           if (result.correctedUnits) {
             logger.log('[lyrics] gemini: response used seconds instead of milliseconds, corrected against known song duration');
@@ -1775,6 +1867,30 @@ ipcMain.on('manual-search-submit', (_e, { title, artist } = {}) => {
 
 ipcMain.on('manual-search-close', () => {
   if (manualSearchWin && !manualSearchWin.isDestroyed()) manualSearchWin.close();
+});
+
+ipcMain.handle('long-video-limit-get', () => ({
+  enabled: store.get('aiLongVideoLimitEnabled'),
+  minutes: store.get('aiLongVideoLimitMinutes'),
+  min: LONG_VIDEO_LIMIT_MIN,
+  max: LONG_VIDEO_LIMIT_MAX,
+}));
+
+ipcMain.on('long-video-limit-save', (_e, { enabled, minutes } = {}) => {
+  // The minutes value only has to be valid while the limit is on — turning it
+  // off keeps whatever number was saved before if the field was left invalid.
+  const n = minutes == null ? NaN : Math.round(Number(minutes));
+  const validMinutes = Number.isFinite(n) && n >= LONG_VIDEO_LIMIT_MIN && n <= LONG_VIDEO_LIMIT_MAX;
+  if (validMinutes || !enabled) {
+    if (validMinutes) store.set('aiLongVideoLimitMinutes', n);
+    store.set('aiLongVideoLimitEnabled', !!enabled);
+    updateTrayMenu();
+  }
+  if (longVideoLimitWin && !longVideoLimitWin.isDestroyed()) longVideoLimitWin.close();
+});
+
+ipcMain.on('long-video-limit-close', () => {
+  if (longVideoLimitWin && !longVideoLimitWin.isDestroyed()) longVideoLimitWin.close();
 });
 
 ipcMain.handle('own-lyrics-get-prefill', () => {

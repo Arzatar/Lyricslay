@@ -12,6 +12,9 @@ const {
   parseGroundedTimedLyrics,
   parseWindowIndices,
   splitKnownLyricsLines,
+  looksLikeEpisodeTitle,
+  blindModeSkipReason,
+  coversTooLittleOfVideo,
 } = require('../src/geminiLyrics');
 
 test('correctSecondsMistakenForMs multiplies by 1000 when the model answered in seconds', () => {
@@ -249,4 +252,61 @@ test('parseBlindResponse still accepts a bare array (model ignored the object sh
   assert.deepEqual(parseBlindResponse(geminiText('[{"timeMs":1000,"text":"a"}]')), {
     timed: [{ timeMs: 1000, text: 'a' }],
   });
+});
+
+test('looksLikeEpisodeTitle catches common episode naming', () => {
+  for (const t of [
+    "S1 E4 - We Went to a Dragon's Wedding",
+    'S01E04 Pilot',
+    'Show Name - Episode 12',
+    'Podcast Ep. 3: Guests',
+    'Episodio 5 - La boda',
+    'Capítulo 7',
+  ]) {
+    assert.equal(looksLikeEpisodeTitle(t), true, t);
+  }
+});
+
+test('looksLikeEpisodeTitle leaves ordinary song titles alone', () => {
+  for (const t of ['Victim or Survivor', 'EP 2 (Full Album)', 'Seasons', 'S.O.S', 'Bohemian Rhapsody', '', null]) {
+    assert.equal(looksLikeEpisodeTitle(t), false, String(t));
+  }
+});
+
+test('blindModeSkipReason flags a video past the long-video limit', () => {
+  assert.equal(blindModeSkipReason({ title: 'Some Video', durationMs: 1420097, maxDurationMs: 12 * 60000 }), 'too-long');
+  assert.equal(blindModeSkipReason({ title: 'Some Song', durationMs: 240000, maxDurationMs: 12 * 60000 }), null);
+});
+
+test('blindModeSkipReason respects a custom limit and a disabled limit', () => {
+  // 23:40 is under a user-chosen 30 min limit
+  assert.equal(blindModeSkipReason({ title: 'Some Video', durationMs: 1420097, maxDurationMs: 30 * 60000 }), null);
+  // limit turned off (null): length alone never skips
+  assert.equal(blindModeSkipReason({ title: 'Some Video', durationMs: 1420097, maxDurationMs: null }), null);
+});
+
+test('blindModeSkipReason always flags episode titles, even with the limit off', () => {
+  assert.equal(
+    blindModeSkipReason({ title: "S1 E4 - We Went to a Dragon's Wedding", durationMs: 1420097, maxDurationMs: null }),
+    'episode-title'
+  );
+});
+
+test('blindModeSkipReason without a known duration only uses the title', () => {
+  assert.equal(blindModeSkipReason({ title: 'Some Song', durationMs: null, maxDurationMs: 12 * 60000 }), null);
+});
+
+test('coversTooLittleOfVideo flags the real fabricated-song case', () => {
+  // Real case: 16 invented lines spanning 3.5s-164s of a 1420s anime episode.
+  const timed = [{ timeMs: 3530, text: 'a' }, { timeMs: 164050, text: 'b' }];
+  assert.equal(coversTooLittleOfVideo(timed, 1420097), true);
+});
+
+test('coversTooLittleOfVideo leaves a normal song and short videos alone', () => {
+  // A 4-min song whose last line is at 1 minute: too short a video to judge.
+  assert.equal(coversTooLittleOfVideo([{ timeMs: 60000, text: 'a' }], 240000), false);
+  // An 8-min song with lyrics through 6 minutes.
+  assert.equal(coversTooLittleOfVideo([{ timeMs: 360000, text: 'a' }], 480000), false);
+  assert.equal(coversTooLittleOfVideo([], 1420097), false);
+  assert.equal(coversTooLittleOfVideo([{ timeMs: 1000, text: 'a' }], null), false);
 });
