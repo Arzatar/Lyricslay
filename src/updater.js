@@ -67,8 +67,14 @@ function checkForUpdates() {
   });
 }
 
+// Silent (/S) so the update doesn't walk the user through the installer
+// wizard again, and force-run so the app reopens by itself once installed —
+// "restart to install" then really is close, update, reopen, like any other
+// app. isQuiting is set up front as well (main.js also sets it on
+// before-quit) so the overlay's close-to-hide handler can't cancel the quit.
 function quitAndInstall() {
-  autoUpdater.quitAndInstall();
+  app.isQuiting = true;
+  autoUpdater.quitAndInstall(true, true);
 }
 
 module.exports = { init, checkForUpdates, quitAndInstall, getStatus, onStatusChange };

@@ -2004,6 +2004,17 @@ app.on('window-all-closed', (e) => {
   e.preventDefault(); // tray app: never quit just because the window closed
 });
 
+// Any real quit — tray "Quit", but also electron-updater's quitAndInstall(),
+// which spawns the installer and then calls app.quit() itself — must get past
+// the overlay's close-to-hide handler. Previously only the tray item set
+// isQuiting, so a "Restart to install update" quit was silently cancelled by
+// that handler (window hidden, app still running) and the installer then
+// failed with "Lyricslay cannot be closed". before-quit fires before any
+// window is asked to close, so setting it here covers every quit path.
+app.on('before-quit', () => {
+  app.isQuiting = true;
+});
+
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
   watcher?.stop();

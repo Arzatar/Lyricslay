@@ -446,6 +446,15 @@ moment an update starts downloading and again once it's ready to install
 (clicking that second one restarts and installs it directly), so you don't
 have to think to reopen the tray and check.
 
+*Restart to install update* closes the app, installs silently (no installer
+wizard) and reopens it by itself (`quitAndInstall(true, true)` in
+`updater.js`). This used to leave the app running instead: electron-updater
+quits via `app.quit()`, and the overlay's close-to-hide handler cancelled
+that quit because only the tray's *Quit* item marked the app as quitting.
+`main.js` now sets that flag on `before-quit`, so every quit path really
+quits. Since the quit code that runs is the *currently installed* version's,
+this only takes effect for updates *from* v2.8.4 or later.
+
 To ship a new version:
 
 1. Bump `"version"` in `package.json` (semver, no `v` prefix there).
